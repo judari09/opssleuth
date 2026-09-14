@@ -1,12 +1,18 @@
-"""Pruebas unitarias de ``ClaudeClarificationEngine`` con el cliente `anthropic` mockeado."""
+"""Pruebas unitarias de `evaluar_descripcion`/`generar_preguntas` con `create_agent` mockeado.
+
+Migrado de `test_claude_engine.py`/`test_ollama_engine.py` (ver
+`specs/002-busqueda-logs/contracts/clarification_migration.md`, "Estrategia de
+migración de pruebas"): mismos casos de prueba, ahora mockeando
+`langchain.agents.create_agent` (tal como lo importa `opssleuth.clarification.engine`)
+en vez del cliente `anthropic`/`ollama` crudo, ya que el comportamiento es el
+mismo independientemente de qué `BaseChatModel` concreto se inyecte.
+"""
 
 from unittest.mock import MagicMock
 
-import anthropic
-import httpx
 import pytest
 
-from opssleuth.clarification.claude_engine import ClaudeClarificationEngine
+from opssleuth.clarification import engine as clarification_engine
 from opssleuth.clarification.engine import (
     CampoExtraidoLLM,
     ClarificationEngineError,
@@ -14,6 +20,8 @@ from opssleuth.clarification.engine import (
     EvaluacionDescripcion,
     MultiplesProblemas,
     PreguntaSugerida,
+    evaluar_descripcion,
+    generar_preguntas,
 )
 
 
@@ -42,37 +50,47 @@ def _evaluacion_incompleta() -> EvaluacionDescripcion:
     )
 
 
-def _cliente_mock(evaluacion: EvaluacionDescripcion) -> MagicMock:
-    cliente = MagicMock()
-    respuesta = MagicMock()
-    respuesta.parsed_output = evaluacion
-    cliente.messages.parse.return_value = respuesta
-    return cliente
+def _mockear_create_agent(monkeypatch, resultado_invoke=None, excepcion=None):
+    """Reemplaza `create_agent` (importado en `clarification.engine`) por un doble.
+
+    Devuelve `(create_agent_mock, agente_mock)` para permitir aserciones tanto
+    sobre la construcción del agente como sobre la invocación.
+    """
+    agente_mock = MagicMock()
+    if excepcion is not None:
+        agente_mock.invoke.side_effect = excepcion
+    else:
+        agente_mock.invoke.return_value = resultado_invoke
+    create_agent_mock = MagicMock(return_value=agente_mock)
+    monkeypatch.setattr(clarification_engine, "create_agent", create_agent_mock)
+    return create_agent_mock, agente_mock
 
 
-class TestEvaluar:
-    def test_evalua_campos_presentes(self):
-        cliente = _cliente_mock(_evaluacion_completa())
-        engine = ClaudeClarificationEngine(client=cliente)
+class TestEvaluarDescripcion:
+    def test_evalua_campos_presentes(self, monkeypatch):
+        _, agente = _mockear_create_agent(
+            monkeypatch, resultado_invoke={"structured_response": _evaluacion_completa()}
+        )
 
-        evaluacion = engine.evaluar("error 500 en facturación desde ayer", [])
+        evaluacion = evaluar_descripcion(MagicMock(), "error 500 en facturación desde ayer", [])
 
         assert evaluacion.sistema_afectado.presente is True
         assert evaluacion.sistema_afectado.valor == "Facturación"
-        cliente.messages.parse.assert_called_once()
+        agente.invoke.assert_called_once()
 
-    def test_evalua_campos_ausentes_y_genera_preguntas_sugeridas(self):
-        cliente = _cliente_mock(_evaluacion_incompleta())
-        engine = ClaudeClarificationEngine(client=cliente)
+    def test_evalua_campos_ausentes_y_genera_preguntas_sugeridas(self, monkeypatch):
+        _mockear_create_agent(
+            monkeypatch, resultado_invoke={"structured_response": _evaluacion_incompleta()}
+        )
 
-        evaluacion = engine.evaluar("no funciona", [])
+        evaluacion = evaluar_descripcion(MagicMock(), "no funciona", [])
 
         assert [p.campo_objetivo for p in evaluacion.preguntas_sugeridas] == [
             "sistema_afectado",
             "sintoma",
         ]
 
-    def test_detecta_contradiccion(self):
+    def test_detecta_contradiccion(self, monkeypatch):
         evaluacion_esperada = EvaluacionDescripcion(
             sistema_afectado=CampoExtraidoLLM(presente=True, valor="Facturación"),
             sintoma=CampoExtraidoLLM(presente=True, valor="Error 500"),
@@ -83,10 +101,12 @@ class TestEvaluar:
             ),
             multiples_problemas=MultiplesProblemas(detectado=False, problemas_identificados=[]),
         )
-        cliente = _cliente_mock(evaluacion_esperada)
-        engine = ClaudeClarificationEngine(client=cliente)
+        _mockear_create_agent(
+            monkeypatch, resultado_invoke={"structured_response": evaluacion_esperada}
+        )
 
-        evaluacion = engine.evaluar(
+        evaluacion = evaluar_descripcion(
+            MagicMock(),
             "en realidad empezó hace una semana",
             [{"role": "assistant", "content": "¿cuándo empezó?"}],
         )
@@ -94,7 +114,7 @@ class TestEvaluar:
         assert evaluacion.contradiccion.detectada is True
         assert evaluacion.contradiccion.descripcion is not None
 
-    def test_detecta_multiples_problemas(self):
+    def test_detecta_multiples_problemas(self, monkeypatch):
         evaluacion_esperada = EvaluacionDescripcion(
             sistema_afectado=CampoExtraidoLLM(presente=False, valor=None),
             sintoma=CampoExtraidoLLM(presente=False, valor=None),
@@ -111,11 +131,12 @@ class TestEvaluar:
                 problemas_identificados=["Login no funciona", "Reportes vacíos"],
             ),
         )
-        cliente = _cliente_mock(evaluacion_esperada)
-        engine = ClaudeClarificationEngine(client=cliente)
+        _mockear_create_agent(
+            monkeypatch, resultado_invoke={"structured_response": evaluacion_esperada}
+        )
 
-        evaluacion = engine.evaluar(
-            "el login no funciona y además los reportes salen vacíos", []
+        evaluacion = evaluar_descripcion(
+            MagicMock(), "el login no funciona y además los reportes salen vacíos", []
         )
 
         assert evaluacion.multiples_problemas.detectado is True
@@ -124,41 +145,26 @@ class TestEvaluar:
             "Reportes vacíos",
         ]
 
-    def test_propaga_api_error_como_clarification_engine_error(self):
-        cliente = MagicMock()
-        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-        cliente.messages.parse.side_effect = anthropic.APIError(
-            "fallo de la API", request, body=None
-        )
-        engine = ClaudeClarificationEngine(client=cliente)
+    def test_propaga_error_del_proveedor_como_clarification_engine_error(self, monkeypatch):
+        _mockear_create_agent(monkeypatch, excepcion=RuntimeError("fallo de comunicación"))
 
         with pytest.raises(ClarificationEngineError) as exc_info:
-            engine.evaluar("no funciona", [])
+            evaluar_descripcion(MagicMock(), "no funciona", [])
 
-        assert isinstance(exc_info.value.__cause__, anthropic.APIError)
-
-    def test_propaga_api_connection_error_como_clarification_engine_error(self):
-        cliente = MagicMock()
-        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-        cliente.messages.parse.side_effect = anthropic.APIConnectionError(request=request)
-        engine = ClaudeClarificationEngine(client=cliente)
-
-        with pytest.raises(ClarificationEngineError) as exc_info:
-            engine.evaluar("no funciona", [])
-
-        assert isinstance(exc_info.value.__cause__, anthropic.APIConnectionError)
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
 
 
 class TestGenerarPreguntas:
-    def test_transforma_preguntas_sugeridas_sin_llamar_al_cliente(self):
-        cliente = _cliente_mock(_evaluacion_completa())
-        engine = ClaudeClarificationEngine(client=cliente)
+    def test_transforma_preguntas_sugeridas_sin_llamar_al_modelo(self, monkeypatch):
+        create_agent_mock, _ = _mockear_create_agent(
+            monkeypatch, resultado_invoke={"structured_response": _evaluacion_completa()}
+        )
         evaluacion = _evaluacion_incompleta()
 
-        aclaraciones = engine.generar_preguntas(evaluacion, [])
+        aclaraciones = generar_preguntas(evaluacion, [])
 
         assert [a.campo_objetivo for a in aclaraciones] == ["sistema_afectado", "sintoma"]
         assert all(a.respuesta is None for a in aclaraciones)
         # generar_preguntas es una transformación determinista (Regla 5 del
-        # contrato): no debe invocar al cliente subyacente.
-        cliente.messages.parse.assert_not_called()
+        # contrato): no debe invocar create_agent en absoluto.
+        create_agent_mock.assert_not_called()

@@ -9,3 +9,5 @@ wheels/
 .specify/
 # Virtual environments
 .venv
+# Variables de entorno locales (pueden contener secretos, p. ej. ANTHROPIC_API_KEY)
+.env

@@ -1,16 +1,19 @@
-"""Contrato del motor de aclaración (ver contracts/clarification_engine.md).
+"""Motor de aclaración (ver contracts/clarification_migration.md).
 
-Este módulo no depende de ningún SDK de proveedor de modelo (Principio II de la
-constitución): define únicamente el contrato (`ClarificationEngine`), los tipos de
-datos de la salida estructurada (`EvaluacionDescripcion` y componentes) y la
-excepción de dominio (`ClarificationEngineError`). Los adaptadores concretos viven
-en `claude_engine.py` y `ollama_engine.py`.
+Migrado a la arquitectura basada en LangChain adoptada por la spec 002 (ver
+``specs/002-busqueda-logs/research.md``, Decisión 9): en vez de un contrato
+``Protocol`` propio con una implementación por proveedor, este módulo expone
+dos funciones simples parametrizadas por un ``BaseChatModel`` ya construido
+(inyectado por el llamador, típicamente vía
+``opssleuth.llm.factory.crear_modelo_chat()``). Este módulo no importa
+``langchain_anthropic``/``langchain_ollama`` ni ningún SDK de proveedor
+directamente (Principio II de la constitución).
 """
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
-
+from langchain.agents import create_agent
+from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, ConfigDict, Field
 
 from opssleuth.domain.case import Aclaracion, CampoObjetivo
@@ -46,9 +49,14 @@ forma explícita o inequívoca."""
 class ClarificationEngineError(Exception):
     """Error de comunicación con el proveedor subyacente del motor de aclaración.
 
-    Cualquier implementación de `ClarificationEngine` DEBE capturar las
-    excepciones propias de su SDK subyacente y relanzarlas como esta excepción
-    (Regla 4 del contrato), conservando la excepción original como `__cause__`.
+    `evaluar_descripcion` captura las excepciones que el proveedor subyacente
+    (a través de LangChain) propague y las relanza como esta excepción,
+    conservando la excepción original como `__cause__`. Se captura de forma
+    amplia (`Exception`) porque acotar el mapeo a tipos de excepción concretos
+    de cada proveedor (p. ej. `anthropic.APIError`) requeriría importar esos
+    SDKs directamente en este módulo, lo cual violaría el confinamiento del
+    acoplamiento a terceros exigido por la excepción del Principio II (ver
+    ``specs/002-busqueda-logs/research.md``, Decisión 1, nota de riesgo).
     """
 
 
@@ -122,7 +130,7 @@ class MultiplesProblemas(BaseModel):
 
 
 class EvaluacionDescripcion(BaseModel):
-    """Salida estructurada de ``ClarificationEngine.evaluar`` (ver evaluacion_schema.json).
+    """Salida estructurada de `evaluar_descripcion` (ver evaluacion_schema.json).
 
     Attributes
     ----------
@@ -151,77 +159,76 @@ class EvaluacionDescripcion(BaseModel):
     multiples_problemas: MultiplesProblemas
 
 
-@runtime_checkable
-class ClarificationEngine(Protocol):
-    """Contrato que debe implementar cualquier motor de aclaración de incidencias.
+def evaluar_descripcion(
+    chat_model: BaseChatModel, texto: str, contexto: list[dict]
+) -> EvaluacionDescripcion:
+    """Evalúa `texto` dado el `contexto` de la conversación del caso.
 
-    Ver `contracts/clarification_engine.md` para las reglas completas del
-    contrato. Cualquier implementación (Claude, Ollama, o una futura basada en
-    reglas) DEBE ser sustituible sin cambios en el código consumidor (`Caso`,
-    CLI) — Principio II de la constitución.
+    Sin efectos secundarios sobre el `Caso` (Regla 1 del contrato). Usa
+    `langchain.agents.create_agent` con `response_format=EvaluacionDescripcion`
+    (sin herramientas) para obtener la salida estructurada — el modelo produce
+    directamente una instancia de `EvaluacionDescripcion` en
+    ``resultado["structured_response"]``.
+
+    Parameters
+    ----------
+    chat_model : BaseChatModel
+        Modelo de chat ya construido (ver `opssleuth.llm.factory.crear_modelo_chat`).
+    texto : str
+        Texto a evaluar (descripción inicial o respuesta de aclaración).
+    contexto : list of dict
+        Historial de la conversación del caso, en formato ``role``/``content``.
+
+    Returns
+    -------
+    EvaluacionDescripcion
+        Evaluación estructurada de campos, contradicción y múltiples problemas.
+
+    Raises
+    ------
+    ClarificationEngineError
+        Si ocurre un error de comunicación con el proveedor subyacente.
     """
-
-    def evaluar(self, texto: str, contexto: list[dict]) -> EvaluacionDescripcion:
-        """Evalúa `texto` dado el `contexto` de la conversación del caso.
-
-        Parameters
-        ----------
-        texto : str
-            Texto a evaluar (descripción inicial o respuesta de aclaración).
-        contexto : list of dict
-            Historial de la conversación del caso, en formato ``role``/``content``.
-
-        Returns
-        -------
-        EvaluacionDescripcion
-            Evaluación estructurada de campos, contradicción y múltiples problemas.
-
-        Raises
-        ------
-        ClarificationEngineError
-            Si ocurre un error de comunicación con el proveedor subyacente.
-        """
-        ...
-
-    def generar_preguntas(
-        self, evaluacion: EvaluacionDescripcion, contexto: list[dict]
-    ) -> list[Aclaracion]:
-        """Transforma `evaluacion.preguntas_sugeridas` en objetos `Aclaracion`.
-
-        Es una transformación determinista (Regla 5 del contrato) — no realiza
-        una llamada adicional al modelo subyacente.
-
-        Parameters
-        ----------
-        evaluacion : EvaluacionDescripcion
-            Evaluación previamente producida por `evaluar`.
-        contexto : list of dict
-            Historial de la conversación del caso (sin uso en la transformación
-            determinista, presente para cumplir el contrato).
-
-        Returns
-        -------
-        list of Aclaracion
-            Una `Aclaracion` sin responder por cada pregunta sugerida.
-        """
-        ...
+    agente = create_agent(
+        model=chat_model,
+        tools=[],
+        system_prompt=INSTRUCCIONES_EVALUACION,
+        response_format=EvaluacionDescripcion,
+    )
+    mensajes = [*contexto, {"role": "user", "content": texto}]
+    try:
+        resultado = agente.invoke({"messages": mensajes})
+    except Exception as error:
+        raise ClarificationEngineError(
+            "Error al comunicarse con el proveedor de modelo subyacente."
+        ) from error
+    return resultado["structured_response"]
 
 
-class BaseClarificationEngine:
-    """Implementación compartida de `generar_preguntas` (Regla 5 del contrato).
+def generar_preguntas(
+    evaluacion: EvaluacionDescripcion, contexto: list[dict]
+) -> list[Aclaracion]:
+    """Transforma `evaluacion.preguntas_sugeridas` en objetos `Aclaracion`.
 
-    Las implementaciones concretas (`ClaudeClarificationEngine`,
-    `OllamaClarificationEngine`) heredan de esta clase y solo necesitan
-    implementar `evaluar`, evitando duplicar la transformación determinista de
-    `preguntas_sugeridas` en cada adaptador (Principio IV — simplicidad).
+    Transformación determinista (Regla 5 del contrato) — NO realiza una
+    llamada adicional al modelo. Sin cambios de comportamiento respecto a la
+    implementación original de 001.
+
+    Parameters
+    ----------
+    evaluacion : EvaluacionDescripcion
+        Evaluación previamente producida por `evaluar_descripcion`.
+    contexto : list of dict
+        Historial de la conversación del caso (sin uso en la transformación
+        determinista, presente por simetría con `evaluar_descripcion`).
+
+    Returns
+    -------
+    list of Aclaracion
+        Una `Aclaracion` sin responder por cada pregunta sugerida.
     """
-
-    def generar_preguntas(
-        self, evaluacion: EvaluacionDescripcion, contexto: list[dict]
-    ) -> list[Aclaracion]:
-        """Ver `ClarificationEngine.generar_preguntas`."""
-        del contexto  # no se usa: la transformación es determinista
-        return [
-            Aclaracion(pregunta=sugerida.pregunta, campo_objetivo=sugerida.campo_objetivo)
-            for sugerida in evaluacion.preguntas_sugeridas
-        ]
+    del contexto  # no se usa: la transformación es determinista
+    return [
+        Aclaracion(pregunta=sugerida.pregunta, campo_objetivo=sugerida.campo_objetivo)
+        for sugerida in evaluacion.preguntas_sugeridas
+    ]

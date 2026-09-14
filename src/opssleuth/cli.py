@@ -1,21 +1,32 @@
-"""Bucle conversacional de la CLI de recepción de incidencias (OpsSleuth).
+"""Bucle conversacional de la CLI de OpsSleuth.
 
-Orquesta las tres historias de usuario de esta funcionalidad: recepción de la
-descripción inicial (US1), mantenimiento del contexto de la conversación (US2), y
-aclaración ante descripciones ambiguas (US3). Depende únicamente de
-`opssleuth.domain.case` y del contrato `ClarificationEngine` — nunca de un SDK de
-proveedor de modelo concreto (Principio II de la constitución).
+Orquesta la recepción de incidencias (spec 001: descripción inicial, contexto
+de la conversación, aclaración ante ambigüedad) y la búsqueda de evidencia en
+logs (spec 002). Depende únicamente de `opssleuth.domain.case`, del módulo de
+aclaración (`opssleuth.clarification.engine`) y de un `BaseChatModel` ya
+construido (inyectado vía `opssleuth.llm.factory.crear_modelo_chat`) — nunca de
+un SDK de proveedor de modelo concreto directamente (Principio II de la
+constitución).
 """
 
 from __future__ import annotations
 
+import os
+import tempfile
+
+from dotenv import load_dotenv
+from langchain_core.language_models import BaseChatModel
+
 from opssleuth.clarification.engine import (
-    ClarificationEngine,
     ClarificationEngineError,
     EvaluacionDescripcion,
+    evaluar_descripcion,
+    generar_preguntas,
 )
-from opssleuth.clarification.factory import crear_motor_aclaracion
 from opssleuth.domain.case import Aclaracion, CampoExtraido, Caso, DescripcionVaciaError
+from opssleuth.domain.log_evidence import FuenteDeLogs
+from opssleuth.evidence.engine import LogSearchEngineError, buscar_evidencia
+from opssleuth.llm.factory import crear_modelo_chat
 
 FRASES_SALIDA = ("salir", "exit", "quit")
 FRASES_NUEVO_CASO = ("nuevo caso", "otro problema", "reportar otro", "quiero reportar")
@@ -31,6 +42,9 @@ FRASES_NO_PUEDO_APORTAR_MAS = (
 FRASES_CONFIRMACION = ("si", "sí", "yes", "y", "s", "confirmo", "correcto")
 
 CAMPOS_DE_DESCRIPCION = ("sistema_afectado", "sintoma", "momento")
+
+UMBRAL_LINEAS_PEGADAS = 4
+"""Umbral de líneas pegadas a partir del cual se genera un archivo temporal (FR-003/FR-004)."""
 
 
 def _leer_entrada(prompt: str) -> str:
@@ -217,7 +231,7 @@ def _confirmar_problema_principal(caso: Caso, evaluacion: EvaluacionDescripcion)
 
 
 def _formular_y_registrar_aclaracion(
-    caso: Caso, motor: ClarificationEngine, aclaracion: Aclaracion
+    caso: Caso, chat_model: BaseChatModel, aclaracion: Aclaracion
 ) -> None:
     """Formula una pregunta de aclaración estándar y registra la respuesta.
 
@@ -230,8 +244,8 @@ def _formular_y_registrar_aclaracion(
     ----------
     caso : Caso
         Caso en curso.
-    motor : ClarificationEngine
-        Motor usado para evaluar la respuesta en busca de contradicciones.
+    chat_model : BaseChatModel
+        Modelo de chat usado para evaluar la respuesta en busca de contradicciones.
     aclaracion : Aclaracion
         Aclaración a formular (con `respuesta=None`).
     """
@@ -252,7 +266,7 @@ def _formular_y_registrar_aclaracion(
     aclaracion.respuesta = respuesta
 
     try:
-        evaluacion_respuesta = motor.evaluar(respuesta, caso.mensajes)
+        evaluacion_respuesta = evaluar_descripcion(chat_model, respuesta, caso.mensajes)
     except ClarificationEngineError:
         evaluacion_respuesta = None
 
@@ -274,7 +288,182 @@ def _formular_y_registrar_aclaracion(
         )
 
 
-def _procesar_intake(caso: Caso, motor: ClarificationEngine) -> None:
+def _parece_ruta_de_archivo(texto: str) -> bool:
+    """Heurística: ¿`texto` tiene forma de intento de ruta de archivo?
+
+    Distingue un intento de ruta que resultó inaccesible (para el mensaje de
+    FR-002) de la primera línea de contenido pegado: las rutas típicamente
+    contienen un separador de directorio o una extensión reconocible y no
+    contienen espacios ni saltos de línea; las líneas de log típicamente sí
+    contienen espacios (timestamp, nivel, mensaje).
+
+    Parameters
+    ----------
+    texto : str
+        Línea de entrada del usuario.
+
+    Returns
+    -------
+    bool
+        True si `texto` parece un intento de ruta de archivo.
+    """
+    if "\n" in texto or " " in texto or len(texto) > 260:
+        return False
+    return "/" in texto or "\\" in texto or texto.lower().endswith((".log", ".txt"))
+
+
+def _acumular_lineas_pegadas(primera_linea: str) -> list[str]:
+    """Acumula líneas de contenido pegado, empezando por `primera_linea`.
+
+    Sigue leyendo líneas sucesivas hasta una línea en blanco (o EOF), que
+    señala el fin del contenido — cubre el caso en que el usuario pega el
+    contenido fragmentado en varios mensajes sucesivos (Edge Case, spec.md).
+
+    Parameters
+    ----------
+    primera_linea : str
+        Primera línea ya leída, que inicia la acumulación.
+
+    Returns
+    -------
+    list of str
+        Todas las líneas acumuladas, en orden.
+    """
+    lineas = list(primera_linea.splitlines()) or [primera_linea]
+    while True:
+        try:
+            siguiente = _leer_entrada("")
+        except EOFError:
+            break
+        if siguiente == "":
+            break
+        lineas.extend(siguiente.splitlines() or [siguiente])
+    return lineas
+
+
+def _registrar_contenido_pegado(caso: Caso, lineas: list[str]) -> None:
+    """Registra contenido de logs pegado según el umbral `UMBRAL_LINEAS_PEGADAS`.
+
+    Por encima del umbral, genera un archivo temporal, informa su ubicación
+    (FR-015) y lo registra como `FuenteDeLogs` (FR-003). En o por debajo del
+    umbral, usa el contenido directamente como contexto conversacional del
+    caso, sin generar archivo ni `FuenteDeLogs` (FR-004).
+
+    Parameters
+    ----------
+    caso : Caso
+        Caso al que se le registrará la fuente o el contexto.
+    lineas : list of str
+        Líneas de contenido pegado ya acumuladas.
+    """
+    if len(lineas) > UMBRAL_LINEAS_PEGADAS:
+        descriptor, ruta = tempfile.mkstemp(prefix="opssleuth_logs_", suffix=".log")
+        with os.fdopen(descriptor, "w", encoding="utf-8") as archivo:
+            archivo.write("\n".join(lineas))
+        _imprimir(
+            f"El contenido que pegaste ({len(lineas)} líneas) lo guardé en un "
+            f"archivo para poder consultarlo sin saturar el contexto: {ruta}"
+        )
+        caso.fuentes_logs.append(FuenteDeLogs(ruta=ruta, origen="contenido_pegado"))
+        return
+
+    contenido = "\n".join(lineas)
+    caso.agregar_mensaje("user", f"Contenido de logs aportado:\n{contenido}")
+    _imprimir("Anotado el contenido de logs que compartiste.")
+
+
+def _solicitar_evidencia_logs(caso: Caso) -> None:
+    """Invita proactivamente a aportar evidencia de logs y registra la fuente (US1).
+
+    Se invoca en cuanto la recepción de la incidencia queda con información
+    completa (FR-014). Acepta una ruta de archivo o contenido pegado
+    directamente (FR-001); si la ruta indicada no es accesible, informa y
+    permite reintentar con otra ruta o pegar los logs directamente (FR-002).
+
+    Parameters
+    ----------
+    caso : Caso
+        Caso con la recepción de incidencia ya completa.
+    """
+    if caso.fuentes_logs:
+        return
+
+    entrada = _leer_entrada(
+        "Ahora que tengo clara la descripción, ¿puedes aportar los logs "
+        "relacionados? Indica la ruta a un archivo, o pega el contenido "
+        "directamente (si son varias líneas, termina con una línea en blanco): "
+    )
+
+    while True:
+        candidata = entrada.strip()
+        if candidata and os.path.isfile(candidata):
+            caso.fuentes_logs.append(FuenteDeLogs(ruta=candidata, origen="ruta_usuario"))
+            _imprimir(f"Fuente de logs registrada: {candidata}")
+            return
+
+        if candidata and _parece_ruta_de_archivo(candidata):
+            entrada = _leer_entrada(
+                f"No pude acceder a '{candidata}' como archivo. Revisa la ruta e "
+                "inténtalo de nuevo, o pega el contenido de los logs directamente: "
+            )
+            continue
+
+        lineas = _acumular_lineas_pegadas(entrada)
+        _registrar_contenido_pegado(caso, lineas)
+        return
+
+
+def _preguntar_al_usuario_cli(pregunta: str) -> str:
+    """Implementación del callback de `preguntar_al_usuario` para la CLI (US4).
+
+    Parameters
+    ----------
+    pregunta : str
+        Pregunta formulada por el agente de búsqueda de logs.
+
+    Returns
+    -------
+    str
+        Respuesta escrita por el usuario.
+    """
+    return _leer_entrada(f"{pregunta} ")
+
+
+def _buscar_y_presentar_apreciacion_logs(caso: Caso, chat_model: BaseChatModel) -> None:
+    """Invoca `buscar_evidencia` y presenta la apreciación resultante (US2/US3).
+
+    Guarda el resultado en `Caso.apreciacion_logs` (FR-010) para que quede
+    disponible en el contexto del caso para referencias posteriores.
+
+    Parameters
+    ----------
+    caso : Caso
+        Caso con al menos una fuente de logs aportada.
+    chat_model : BaseChatModel
+        Modelo de chat a usar para la búsqueda.
+    """
+    _imprimir("Buscando en los logs aportados...")
+    try:
+        apreciacion = buscar_evidencia(
+            chat_model, caso, caso.fuentes_logs, _preguntar_al_usuario_cli
+        )
+    except LogSearchEngineError:
+        _imprimir(
+            "No pude completar la búsqueda en los logs en este momento (error "
+            "de comunicación con el motor de búsqueda)."
+        )
+        return
+
+    caso.apreciacion_logs = apreciacion
+    _imprimir(apreciacion.resumen)
+    if apreciacion.hay_mas_coincidencias:
+        _imprimir(
+            "Hay más coincidencias además de las mostradas arriba; puedo "
+            "profundizar si lo necesitas."
+        )
+
+
+def _procesar_intake(caso: Caso, chat_model: BaseChatModel) -> None:
     """Ejecuta el flujo completo de recepción de una incidencia para un caso.
 
     Solicita y registra la descripción inicial (FR-001-003, FR-011), evalúa los
@@ -287,13 +476,15 @@ def _procesar_intake(caso: Caso, motor: ClarificationEngine) -> None:
     ----------
     caso : Caso
         Caso recién creado (sin descripción registrada) o ya iniciado.
-    motor : ClarificationEngine
-        Motor de aclaración a usar para evaluar la descripción y las respuestas.
+    chat_model : BaseChatModel
+        Modelo de chat a usar para evaluar la descripción y las respuestas.
     """
     _solicitar_descripcion(caso)
 
     try:
-        evaluacion = motor.evaluar(caso.descripcion_inicial.texto, caso.mensajes)
+        evaluacion = evaluar_descripcion(
+            chat_model, caso.descripcion_inicial.texto, caso.mensajes
+        )
     except ClarificationEngineError:
         _imprimir(
             "No pude evaluar la descripción en este momento (error de "
@@ -305,7 +496,7 @@ def _procesar_intake(caso: Caso, motor: ClarificationEngine) -> None:
     _aplicar_campos_evaluados(caso, evaluacion)
     _confirmar_problema_principal(caso, evaluacion)
 
-    aclaraciones_sugeridas = motor.generar_preguntas(evaluacion, caso.mensajes)
+    aclaraciones_sugeridas = generar_preguntas(evaluacion, caso.mensajes)
     preguntas_de_campos = [
         a for a in aclaraciones_sugeridas if a.campo_objetivo in CAMPOS_DE_DESCRIPCION
     ]
@@ -317,14 +508,14 @@ def _procesar_intake(caso: Caso, motor: ClarificationEngine) -> None:
     for aclaracion in preguntas_de_campos:
         if aclaracion.campo_objetivo not in caso.descripcion_inicial.campos_faltantes():
             continue  # ya se respondió como efecto de una aclaración anterior
-        _formular_y_registrar_aclaracion(caso, motor, aclaracion)
+        _formular_y_registrar_aclaracion(caso, chat_model, aclaracion)
 
     if not caso.descripcion_inicial.campos_faltantes():
         caso.marcar_informacion_completa()
 
 
-def ejecutar_conversacion(motor: ClarificationEngine | None = None) -> None:
-    """Ejecuta el bucle principal de la conversación de recepción de incidencias.
+def ejecutar_conversacion(chat_model: BaseChatModel | None = None) -> None:
+    """Ejecuta el bucle principal de la conversación de OpsSleuth.
 
     Gestiona el ciclo de vida de los casos dentro de la conversación: al inicio
     (o tras finalizar uno) crea un caso nuevo y ejecuta su intake; mientras un
@@ -334,20 +525,24 @@ def ejecutar_conversacion(motor: ClarificationEngine | None = None) -> None:
 
     Parameters
     ----------
-    motor : ClarificationEngine, optional
-        Motor de aclaración a usar. Si no se proporciona, se crea uno mediante
-        `crear_motor_aclaracion()` según la variable de entorno
+    chat_model : BaseChatModel, optional
+        Modelo de chat a usar. Si no se proporciona, se crea uno mediante
+        `crear_modelo_chat()` según la variable de entorno
         `OPSSLEUTH_LLM_PROVIDER`.
     """
-    motor = motor or crear_motor_aclaracion()
+    chat_model = chat_model or crear_modelo_chat()
     caso: Caso | None = None
 
     while True:
         if caso is None or caso.estado_caso == "finalizado":
             caso = Caso()
             _imprimir("--- Nuevo caso ---")
-            _procesar_intake(caso, motor)
+            _procesar_intake(caso, chat_model)
             _imprimir(caso.resumen())
+            if caso.estado_informacion == "completa":
+                _solicitar_evidencia_logs(caso)
+                if caso.fuentes_logs:
+                    _buscar_y_presentar_apreciacion_logs(caso, chat_model)
 
         entrada = _leer_entrada(
             "\n¿Algo más sobre este caso? (o 'nuevo caso' / 'salir'): "
@@ -371,6 +566,15 @@ def ejecutar_conversacion(motor: ClarificationEngine | None = None) -> None:
 
         if _es_solicitud_de_resumen(entrada):
             _imprimir(caso.resumen())
+            if caso.apreciacion_logs is not None:
+                _imprimir(caso.apreciacion_logs.resumen)
+            continue
+
+        if entrada.strip() and os.path.isfile(entrada.strip()):
+            # Fuente de logs adicional aportada en cualquier momento (FR-013).
+            caso.fuentes_logs.append(FuenteDeLogs(ruta=entrada.strip(), origen="ruta_usuario"))
+            _imprimir(f"Fuente de logs adicional registrada: {entrada.strip()}")
+            _buscar_y_presentar_apreciacion_logs(caso, chat_model)
             continue
 
         caso.agregar_mensaje("user", entrada)
@@ -378,7 +582,15 @@ def ejecutar_conversacion(motor: ClarificationEngine | None = None) -> None:
 
 
 def main() -> None:
-    """Punto de entrada de la CLI (``python -m opssleuth.cli``)."""
+    """Punto de entrada de la CLI (``python -m opssleuth.cli``).
+
+    Antes de arrancar la conversación, carga las variables de entorno
+    definidas en un archivo ``.env`` en el directorio de trabajo (si existe),
+    sin sobrescribir las que ya estén definidas en el entorno — así
+    `crear_modelo_chat` (y cualquier otra lectura de `os.environ`) las ve
+    igual que si se hubieran exportado manualmente.
+    """
+    load_dotenv()
     try:
         ejecutar_conversacion()
     except (KeyboardInterrupt, EOFError):

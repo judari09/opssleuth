@@ -6,21 +6,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 OpsSleuth is a diagnostic tool for critical systems: it aims to reduce error-investigation
 time by leveraging observability mechanisms exposed by the target applications. Feature
-001 (Recepción de Incidencia — incident intake) is implemented under `src/opssleuth/`:
-a CLI conversational agent that captures the initial problem description, maintains
-conversation context, and asks clarification questions via a swappable
-`ClarificationEngine` (Claude or local Ollama). See `specs/ESTADO_SPECS.md` for the full
-spec registry — **read it before starting or planning any new spec** (see "Spec Kit
-workflow" below). Consult `.specify/memory/constitution.md` for the governing project
-principles.
+001 (Recepción de Incidencia — incident intake) and feature 002 (Búsqueda en Archivos de
+Logs — log evidence search) are implemented under `src/opssleuth/`: a CLI conversational
+agent that captures the initial problem description, maintains conversation context, asks
+clarification questions, and — once intake is complete — invites the user to provide log
+evidence, locates entries related to the incident via a LangGraph tool-calling agent, and
+produces a consolidated initial appreciation. Both flows share a single `BaseChatModel`
+built by `crear_modelo_chat()` (`src/opssleuth/llm/factory.py`, Claude or local Ollama). See
+`specs/ESTADO_SPECS.md` for the full spec registry — **read it before starting or planning
+any new spec** (see "Spec Kit workflow" below). Consult `.specify/memory/constitution.md`
+for the governing project principles.
 
 ## Commands
 
 - Install dependencies: `uv sync`.
 - Run the CLI: `uv run python -m opssleuth.cli` (defaults to the Claude provider; set
   `OPSSLEUTH_LLM_PROVIDER=ollama` + `OPSSLEUTH_OLLAMA_MODEL=<model>` to use a local Ollama
-  model instead — see `specs/001-recepcion-incidencia/quickstart.md`).
-- Run tests: `uv run pytest tests/` (46 tests as of feature 001).
+  model instead, or `OPSSLEUTH_LLM_PROVIDER=gemini` + `GOOGLE_API_KEY=<key>` to use Gemini's
+  free tier — see `specs/001-recepcion-incidencia/quickstart.md`). Copy `.env.example`
+  to `.env` to configure these without exporting them manually — loaded automatically by
+  `main()` via `python-dotenv`.
+- Run tests: `uv run pytest tests/` (72 tests as of feature 002).
 
 ## Constitution (non-negotiable project principles)
 

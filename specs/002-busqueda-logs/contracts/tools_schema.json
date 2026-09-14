@@ -1,0 +1,74 @@
+{
+  "$comment": "Referencia de contenido (nombre, descripción, parámetros) de las 4 herramientas del agente de búsqueda de logs. Con la adopción de LangChain/LangGraph (ver research.md, Decisión 1), estas herramientas se implementan como funciones Python decoradas con @tool (langchain_core.tools), cuyo esquema real se auto-deriva de las anotaciones de tipo y el docstring de cada función -- este JSON ya NO se carga literalmente como input_schema en tiempo de ejecución. Se conserva como referencia de diseño: el texto de 'description' de cada herramienta debe trasladarse al docstring de la función @tool correspondiente.",
+  "tools": [
+    {
+      "name": "buscar_texto",
+      "description": "Busca un patron de expresion regular dentro de la fuente de logs actualmente activa, sin cargar el archivo completo. Usar para localizar lineas que mencionen un termino, componente, codigo de error o patron de fecha/hora especifico. Devuelve hasta 'maximo_resultados' coincidencias, cada una con su numero de linea, el contenido de la linea y una pequena ventana de contexto inmediatamente antes/despues. No devuelve el archivo completo ni un conteo exhaustivo mas alla de 'maximo_resultados' -- si hay mas coincidencias de las devueltas, el resultado lo indica explicitamente.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "patron": {
+            "type": "string",
+            "description": "Expresion regular a buscar en cada linea de la fuente activa."
+          },
+          "maximo_resultados": {
+            "type": "integer",
+            "description": "Numero maximo de coincidencias a devolver en esta llamada.",
+            "default": 20
+          }
+        },
+        "required": ["patron"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "leer_contexto",
+      "description": "Lee un rango de lineas alrededor de un numero de linea especifico de la fuente activa. Usar despues de 'buscar_texto' cuando la ventana de contexto por defecto de una coincidencia no basta para entender la secuencia de eventos alrededor de esa linea.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "numero_linea": {
+            "type": "integer",
+            "description": "Numero de linea (1-indexado) alrededor del cual leer contexto."
+          },
+          "lineas_antes": {
+            "type": "integer",
+            "description": "Cantidad de lineas a incluir antes de 'numero_linea'.",
+            "default": 5
+          },
+          "lineas_despues": {
+            "type": "integer",
+            "description": "Cantidad de lineas a incluir despues de 'numero_linea'.",
+            "default": 5
+          }
+        },
+        "required": ["numero_linea"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "contar_lineas",
+      "description": "Cuenta el numero total de lineas de la fuente de logs actualmente activa. Usar al iniciar el analisis de una fuente para calibrar si es un archivo pequeno (inspeccionable casi por completo) o grande (requiere busqueda dirigida con 'buscar_texto').",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "preguntar_al_usuario",
+      "description": "Pausa el analisis y solicita informacion al usuario sobre el proyecto o sistema al que pertenecen los logs. Usar UNICAMENTE cuando el contenido de los logs o del problema descrito no puede interpretarse sin contexto adicional (terminologia propia, nombres de componentes o convenciones de formato desconocidas). No usar cuando el contenido ya es interpretable por si mismo, ni para preguntas que una busqueda adicional en los propios logs podria responder.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "pregunta": {
+            "type": "string",
+            "description": "Pregunta concreta a formular al usuario, en espanol."
+          }
+        },
+        "required": ["pregunta"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

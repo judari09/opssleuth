@@ -1,5 +1,14 @@
 # Contrato: Motor de Aclaración (ClarificationEngine)
 
+> ⚠️ **Superseded (2026-09-03)**: la arquitectura descrita en este documento (contrato `Protocol`
+> propio + `ClaudeClarificationEngine`/`OllamaClarificationEngine` + `clarification/factory.py`)
+> fue migrada, por decisión explícita del usuario dentro del alcance de la spec 002, a una
+> arquitectura basada en LangChain (`BaseChatModel` como mecanismo de intercambiabilidad, bajo la
+> excepción añadida al Principio II de la constitución en la v1.1.0). Este documento se conserva
+> como registro histórico de la arquitectura original de 001 — el contrato vigente es
+> [`specs/002-busqueda-logs/contracts/clarification_migration.md`](../../002-busqueda-logs/contracts/clarification_migration.md).
+> Las entidades de dominio descritas aquí (`EvaluacionDescripcion` y relacionadas) NO cambiaron.
+
 Este es el contrato arquitectónico (Principio II de la constitución) que debe implementar
 cualquier motor usado para evaluar descripciones de incidencias y generar preguntas de
 aclaración. La implementación inicial usa la API de Claude (ver `research.md`, Decisión 0),

@@ -1,5 +1,7 @@
 """Pruebas unitarias del bucle conversacional de la CLI (`opssleuth.cli`)."""
 
+from unittest.mock import MagicMock
+
 from opssleuth import cli
 from opssleuth.clarification.engine import (
     CampoExtraidoLLM,
@@ -8,25 +10,24 @@ from opssleuth.clarification.engine import (
     MultiplesProblemas,
     PreguntaSugerida,
 )
-from opssleuth.domain.case import Aclaracion, Caso, DescripcionVaciaError
+from opssleuth.domain.case import Caso, DescripcionVaciaError
 
 
-class FakeClarificationEngine:
-    """Motor de aclaración de prueba: evaluaciones predefinidas, sin llamadas reales."""
+class SecuenciaEvaluaciones:
+    """Doble de prueba para `evaluar_descripcion`: evaluaciones predefinidas, sin llamadas reales.
+
+    Se inyecta vía `monkeypatch.setattr(cli, "evaluar_descripcion", ...)`. `generar_preguntas`
+    no necesita un doble: es una transformación determinista sin llamada al modelo (Regla 5
+    del contrato), así que las pruebas usan la implementación real.
+    """
 
     def __init__(self, evaluaciones):
         self._evaluaciones = list(evaluaciones)
         self.llamadas_evaluar = []
 
-    def evaluar(self, texto, contexto):
+    def __call__(self, chat_model, texto, contexto):
         self.llamadas_evaluar.append(texto)
         return self._evaluaciones.pop(0)
-
-    def generar_preguntas(self, evaluacion, contexto):
-        return [
-            Aclaracion(pregunta=p.pregunta, campo_objetivo=p.campo_objetivo)
-            for p in evaluacion.preguntas_sugeridas
-        ]
 
 
 def _evaluacion(
@@ -116,7 +117,7 @@ class TestSolicitarDescripcion:
 class TestProcesarIntake:
     def test_descripcion_completa_no_genera_preguntas(self, monkeypatch):
         monkeypatch.setattr(cli, "_leer_entrada", lambda prompt: "no debería llamarse")
-        motor = FakeClarificationEngine(
+        motor = SecuenciaEvaluaciones(
             [_evaluacion(sistema_presente=True, sintoma_presente=True, momento_presente=True)]
         )
         caso = Caso()
@@ -124,7 +125,8 @@ class TestProcesarIntake:
             "El módulo de facturación devuelve error 500 desde ayer."
         )
 
-        cli._procesar_intake(caso, motor)
+        monkeypatch.setattr(cli, "evaluar_descripcion", motor)
+        cli._procesar_intake(caso, MagicMock())
 
         assert caso.estado_informacion == "completa"
         assert caso.aclaraciones == []
@@ -132,7 +134,7 @@ class TestProcesarIntake:
     def test_descripcion_incompleta_formula_preguntas_y_completa_campos(self, monkeypatch):
         respuestas = iter(["Facturación", "Error 500"])
         monkeypatch.setattr(cli, "_leer_entrada", lambda prompt: next(respuestas))
-        motor = FakeClarificationEngine(
+        motor = SecuenciaEvaluaciones(
             [
                 _evaluacion(
                     momento_presente=True,
@@ -153,7 +155,8 @@ class TestProcesarIntake:
         caso = Caso()
         caso.registrar_descripcion("no funciona desde ayer")
 
-        cli._procesar_intake(caso, motor)
+        monkeypatch.setattr(cli, "evaluar_descripcion", motor)
+        cli._procesar_intake(caso, MagicMock())
 
         assert caso.descripcion_inicial.sistema_afectado.valor == "Facturación"
         assert caso.descripcion_inicial.sintoma.valor == "Error 500"
@@ -163,7 +166,7 @@ class TestProcesarIntake:
     def test_deteccion_de_multiples_problemas_pide_confirmacion(self, monkeypatch):
         respuestas = iter(["El login, es más urgente"])
         monkeypatch.setattr(cli, "_leer_entrada", lambda prompt: next(respuestas))
-        motor = FakeClarificationEngine(
+        motor = SecuenciaEvaluaciones(
             [
                 _evaluacion(
                     multiples_detectado=True,
@@ -180,7 +183,8 @@ class TestProcesarIntake:
         caso = Caso()
         caso.registrar_descripcion("el login no funciona y los reportes salen vacíos")
 
-        cli._procesar_intake(caso, motor)
+        monkeypatch.setattr(cli, "evaluar_descripcion", motor)
+        cli._procesar_intake(caso, MagicMock())
 
         aclaracion_problema = next(
             a for a in caso.aclaraciones if a.campo_objetivo == "problema_principal"
@@ -190,7 +194,7 @@ class TestProcesarIntake:
     def test_no_puedo_aportar_mas_marca_sin_confirmar_y_continua(self, monkeypatch):
         respuestas = iter(["no tengo más información", "Error 500"])
         monkeypatch.setattr(cli, "_leer_entrada", lambda prompt: next(respuestas))
-        motor = FakeClarificationEngine(
+        motor = SecuenciaEvaluaciones(
             [
                 _evaluacion(
                     preguntas=[
@@ -209,7 +213,8 @@ class TestProcesarIntake:
         caso = Caso()
         caso.registrar_descripcion("no funciona desde ayer")
 
-        cli._procesar_intake(caso, motor)
+        monkeypatch.setattr(cli, "evaluar_descripcion", motor)
+        cli._procesar_intake(caso, MagicMock())
 
         sistema_aclaracion = next(
             a for a in caso.aclaraciones if a.campo_objetivo == "sistema_afectado"
@@ -224,7 +229,7 @@ class TestProcesarIntake:
     def test_contradiccion_se_marca_y_no_descarta_datos(self, monkeypatch):
         respuestas = iter(["Hace una semana, no ayer"])
         monkeypatch.setattr(cli, "_leer_entrada", lambda prompt: next(respuestas))
-        motor = FakeClarificationEngine(
+        motor = SecuenciaEvaluaciones(
             [
                 _evaluacion(
                     sistema_presente=True,
@@ -244,7 +249,8 @@ class TestProcesarIntake:
         caso = Caso()
         caso.registrar_descripcion("el sistema falla desde ayer")
 
-        cli._procesar_intake(caso, motor)
+        monkeypatch.setattr(cli, "evaluar_descripcion", motor)
+        cli._procesar_intake(caso, MagicMock())
 
         momento_aclaracion = next(
             a for a in caso.aclaraciones if a.campo_objetivo == "momento"
@@ -253,3 +259,86 @@ class TestProcesarIntake:
         assert momento_aclaracion.respuesta == "Hace una semana, no ayer"
         # el dato original no se pierde: sigue en la descripción inicial original
         assert "desde ayer" in caso.descripcion_inicial.texto
+
+
+class TestSolicitarEvidenciaLogs:
+    """Pruebas de US1 (spec 002): aportar evidencia de logs por ruta o contenido pegado."""
+
+    def test_registra_fuente_por_ruta_accesible(self, monkeypatch, tmp_path):
+        archivo = tmp_path / "app.log"
+        archivo.write_text("ERROR algo falló\n", encoding="utf-8")
+        monkeypatch.setattr(cli, "_leer_entrada", lambda prompt: str(archivo))
+
+        caso = Caso()
+        cli._solicitar_evidencia_logs(caso)
+
+        assert len(caso.fuentes_logs) == 1
+        assert caso.fuentes_logs[0].ruta == str(archivo)
+        assert caso.fuentes_logs[0].origen == "ruta_usuario"
+
+    def test_ruta_inaccesible_permite_reintentar_con_ruta_valida(self, monkeypatch, tmp_path):
+        archivo = tmp_path / "app.log"
+        archivo.write_text("ERROR algo falló\n", encoding="utf-8")
+        entradas = iter(["/ruta/que/no/existe.log", str(archivo)])
+        monkeypatch.setattr(cli, "_leer_entrada", lambda prompt: next(entradas))
+
+        caso = Caso()
+        cli._solicitar_evidencia_logs(caso)
+
+        assert caso.fuentes_logs[0].ruta == str(archivo)
+
+    def test_ruta_inaccesible_permite_cambiar_a_pegar_contenido(self, monkeypatch):
+        entradas = iter(["/ruta/que/no/existe.log", "ERROR único", ""])
+        monkeypatch.setattr(cli, "_leer_entrada", lambda prompt: next(entradas))
+
+        caso = Caso()
+        cli._solicitar_evidencia_logs(caso)
+
+        assert caso.fuentes_logs == []
+        assert any("ERROR único" in m["content"] for m in caso.mensajes)
+
+    def test_contenido_pegado_por_debajo_del_umbral_no_genera_archivo(self, monkeypatch):
+        entradas = iter(["línea 1\nlínea 2\nlínea 3", ""])
+        monkeypatch.setattr(cli, "_leer_entrada", lambda prompt: next(entradas))
+
+        caso = Caso()
+        cli._solicitar_evidencia_logs(caso)
+
+        assert caso.fuentes_logs == []
+        assert any("línea 1" in m["content"] for m in caso.mensajes)
+
+    def test_contenido_pegado_por_encima_del_umbral_genera_archivo(self, monkeypatch, tmp_path):
+        contenido = "\n".join(f"línea {i}" for i in range(1, 6))  # 5 líneas > umbral de 4
+        entradas = iter([contenido, ""])
+        monkeypatch.setattr(cli, "_leer_entrada", lambda prompt: next(entradas))
+
+        caso = Caso()
+        cli._solicitar_evidencia_logs(caso)
+
+        assert len(caso.fuentes_logs) == 1
+        assert caso.fuentes_logs[0].origen == "contenido_pegado"
+        with open(caso.fuentes_logs[0].ruta, encoding="utf-8") as archivo:
+            assert archivo.read().count("línea") == 5
+
+    def test_acumula_contenido_pegado_fragmentado_en_varios_mensajes(self, monkeypatch):
+        entradas = iter(["línea 1", "línea 2", "línea 3", "línea 4", "línea 5", ""])
+        monkeypatch.setattr(cli, "_leer_entrada", lambda prompt: next(entradas))
+
+        caso = Caso()
+        cli._solicitar_evidencia_logs(caso)
+
+        assert len(caso.fuentes_logs) == 1  # 5 líneas acumuladas > umbral de 4
+        assert caso.fuentes_logs[0].origen == "contenido_pegado"
+
+    def test_no_vuelve_a_solicitar_si_ya_hay_fuente_registrada(self, monkeypatch):
+        def _fallar_si_se_llama(prompt):
+            raise AssertionError("no debería pedirse evidencia de logs de nuevo")
+
+        monkeypatch.setattr(cli, "_leer_entrada", _fallar_si_se_llama)
+
+        caso = Caso()
+        caso.fuentes_logs.append(
+            cli.FuenteDeLogs(ruta="/tmp/ya-registrado.log", origen="ruta_usuario")
+        )
+
+        cli._solicitar_evidencia_logs(caso)  # no debe lanzar ni pedir entrada

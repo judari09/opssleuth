@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Literal
+
+from opssleuth.domain.log_evidence import ApreciacionInicialLogs, FuenteDeLogs
 
 EstadoInformacion = Literal["pendiente_descripcion", "pendiente_aclaracion", "completa"]
 EstadoCaso = Literal["activo", "finalizado"]
@@ -133,6 +136,16 @@ class Caso:
     mensajes : list of dict
         Historial de mensajes (``role``, ``content``) usado como contexto
         multi-turno al invocar al motor de aclaración.
+    creado_en : datetime
+        Marca de tiempo de creación del caso. Sirve de anclaje temporal
+        absoluto para interpretar expresiones relativas del campo ``momento``
+        durante la búsqueda de evidencia en logs (ver
+        ``specs/002-busqueda-logs/research.md``, Decisión 5).
+    fuentes_logs : list of FuenteDeLogs
+        Fuentes de logs aportadas para el caso (spec 002, FR-013).
+    apreciacion_logs : ApreciacionInicialLogs or None
+        Apreciación inicial consolidada de logs, una vez producida (spec 002,
+        FR-010); None mientras no se haya buscado evidencia.
     """
 
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -141,6 +154,9 @@ class Caso:
     estado_informacion: EstadoInformacion = "pendiente_descripcion"
     estado_caso: EstadoCaso = "activo"
     mensajes: list[dict] = field(default_factory=list)
+    creado_en: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    fuentes_logs: list[FuenteDeLogs] = field(default_factory=list)
+    apreciacion_logs: ApreciacionInicialLogs | None = None
 
     def registrar_descripcion(self, texto: str) -> DescripcionProblema:
         """Registra la descripción inicial del caso (FR-002).

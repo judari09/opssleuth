@@ -5,10 +5,19 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "anthropic>=0.69.0",
-    "ollama>=0.6.0",
+    "langchain>=1.4.0",
+    "langchain-anthropic>=1.7.1",
+    "langchain-core>=1.6.1",
+    "langchain-google-genai>=4.4.0",
+    "langchain-ollama>=1.1.0",
+    "langgraph>=1.2.11",
     "pydantic>=2.9.0",
+    "python-dotenv>=1.0.1",
 ]
+# anthropic/ollama/google-genai ya no son dependencias directas: ningún módulo
+# de negocio los importa directamente (confinado a src/opssleuth/llm/factory.py,
+# que solo usa langchain-anthropic/langchain-ollama/langchain-google-genai).
+# Permanecen instalados como transitivas de esos tres paquetes.
 
 [dependency-groups]
 dev = [

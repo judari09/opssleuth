@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EvaluacionDescripcion",
+  "description": "Salida estructurada (structured output) usada con output_config.format en la llamada a la API de Claude para evaluar si una descripción de incidencia contiene los 3 campos requeridos (FR-006) y, si faltan, para sugerir preguntas de aclaración (FR-007).",
+  "type": "object",
+  "properties": {
+    "sistema_afectado": { "$ref": "#/$defs/campo_extraido" },
+    "sintoma": { "$ref": "#/$defs/campo_extraido" },
+    "momento": { "$ref": "#/$defs/campo_extraido" },
+    "preguntas_sugeridas": {
+      "type": "array",
+      "description": "Preguntas de aclaración puntuales: una por cada campo con presente=false (FR-007/FR-009), y opcionalmente una con campo_objetivo=problema_principal cuando multiples_problemas.detectado=true (ver Edge Case 'múltiples problemas mezclados' en spec.md). Vacío si los 3 campos están presentes y no se detectaron múltiples problemas.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "campo_objetivo": {
+            "type": "string",
+            "enum": ["sistema_afectado", "sintoma", "momento", "problema_principal"]
+          },
+          "pregunta": { "type": "string" }
+        },
+        "required": ["campo_objetivo", "pregunta"],
+        "additionalProperties": false
+      },
+      "maxItems": 4
+    },
+    "contradiccion": {
+      "type": "object",
+      "description": "Evaluación de si el texto analizado (típicamente una respuesta de aclaración) contradice el contexto previo (descripción original u otra aclaración). Ver Edge Case 'el usuario aporta información que contradice lo dicho en la descripción original' en spec.md.",
+      "properties": {
+        "detectada": { "type": "boolean" },
+        "descripcion": {
+          "type": ["string", "null"],
+          "description": "Explicación breve de la inconsistencia encontrada; null si detectada=false."
+        }
+      },
+      "required": ["detectada", "descripcion"],
+      "additionalProperties": false
+    },
+    "multiples_problemas": {
+      "type": "object",
+      "description": "Evaluación de si el texto analizado (típicamente la descripción inicial) describe más de un problema distinto. Ver Edge Case 'descripción extremadamente extensa con múltiples problemas mezclados' en spec.md.",
+      "properties": {
+        "detectado": { "type": "boolean" },
+        "problemas_identificados": {
+          "type": "array",
+          "description": "Etiquetas breves de cada problema distinto identificado; vacío si detectado=false.",
+          "items": { "type": "string" },
+          "maxItems": 5
+        }
+      },
+      "required": ["detectado", "problemas_identificados"],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "sistema_afectado",
+    "sintoma",
+    "momento",
+    "preguntas_sugeridas",
+    "contradiccion",
+    "multiples_problemas"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "campo_extraido": {
+      "type": "object",
+      "properties": {
+        "presente": { "type": "boolean" },
+        "valor": {
+          "type": ["string", "null"],
+          "description": "Valor extraído del texto si presente=true; null en caso contrario."
+        }
+      },
+      "required": ["presente", "valor"],
+      "additionalProperties": false
+    }
+  }
+}

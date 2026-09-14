@@ -13,6 +13,8 @@ de diseño — ver `data-model.md` y `contracts/` para eso.
   - **Ollama** (local): una instancia de Ollama en ejecución localmente
     (`http://localhost:11434` por defecto) con el modelo deseado ya descargado
     (`ollama pull <modelo>`).
+  - **Gemini** (nube, capa gratuita): variable de entorno `GOOGLE_API_KEY` (obtenida en Google
+    AI Studio). Útil como alternativa a Ollama en máquinas con VRAM/RAM limitada.
 
 ## Instalación
 
@@ -36,6 +38,19 @@ export OPSSLEUTH_LLM_PROVIDER=ollama
 export OPSSLEUTH_OLLAMA_MODEL=<modelo-descargado-en-ollama>
 uv run python -m opssleuth.cli
 ```
+
+Con Gemini (capa gratuita de Google AI Studio) — mismo mecanismo de intercambiabilidad:
+
+```sh
+export OPSSLEUTH_LLM_PROVIDER=gemini
+export GOOGLE_API_KEY=<api-key-de-google-ai-studio>
+uv run python -m opssleuth.cli
+```
+
+Alternativa: en vez de exportar las variables en cada sesión de shell, copiar
+`.env.example` a `.env` (no versionado, ver `.gitignore`) y completar los valores ahí. La
+CLI carga automáticamente `.env` al arrancar (`main()` en `opssleuth.cli`), sin sobrescribir
+variables ya exportadas en el entorno.
 
 Los escenarios de validación siguientes son idénticos independientemente del proveedor
 configurado — el comportamiento observable del sistema no debe depender de cuál esté activo,

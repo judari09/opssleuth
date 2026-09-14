@@ -145,6 +145,21 @@ class TestContextoConversacional:
         assert "contradice" in resumen.lower()
 
 
+class TestExtensionEvidenciaLogs:
+    """Pruebas de la extensión de ``Caso`` para la spec 002 (creado_en/fuentes_logs/apreciacion_logs)."""
+
+    def test_creado_en_se_puebla_automaticamente(self):
+        caso = Caso()
+
+        assert caso.creado_en is not None
+
+    def test_fuentes_logs_vacia_por_defecto(self):
+        assert Caso().fuentes_logs == []
+
+    def test_apreciacion_logs_none_por_defecto(self):
+        assert Caso().apreciacion_logs is None
+
+
 class TestDescripcionProblemaCamposFaltantes:
     """Pruebas de ``DescripcionProblema.campos_faltantes`` (FR-006)."""
 
