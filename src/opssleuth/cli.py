@@ -178,8 +178,12 @@ def _solicitar_descripcion(caso: Caso) -> None:
         _imprimir("Gracias, recibí tu descripción del problema.")
 
 
-def _aplicar_campos_evaluados(caso: Caso, evaluacion: EvaluacionDescripcion) -> None:
-    """Copia los 3 campos evaluados por el motor a la descripción del caso (FR-006).
+def _aplicar_campos_evaluados(
+    caso: Caso,
+    evaluacion: EvaluacionDescripcion,
+    campos: tuple[str, ...] = CAMPOS_DE_DESCRIPCION,
+) -> None:
+    """Copia los campos evaluados por el motor a la descripción del caso (FR-006).
 
     Parameters
     ----------
@@ -187,17 +191,25 @@ def _aplicar_campos_evaluados(caso: Caso, evaluacion: EvaluacionDescripcion) -> 
         Caso cuya `descripcion_inicial` se actualizará.
     evaluacion : EvaluacionDescripcion
         Evaluación estructurada producida por `ClarificationEngine.evaluar`.
+    campos : tuple of str, optional
+        Subconjunto de `CAMPOS_DE_DESCRIPCION` a copiar; por defecto los 3. Se
+        restringe a los campos aún pendientes al procesar una respuesta
+        combinada a varias aclaraciones (Historia 2, spec 003), para no
+        sobrescribir un campo ya confirmado que esta evaluación no mencione.
     """
     descripcion = caso.descripcion_inicial
-    descripcion.sistema_afectado = CampoExtraido(
-        presente=evaluacion.sistema_afectado.presente, valor=evaluacion.sistema_afectado.valor
-    )
-    descripcion.sintoma = CampoExtraido(
-        presente=evaluacion.sintoma.presente, valor=evaluacion.sintoma.valor
-    )
-    descripcion.momento = CampoExtraido(
-        presente=evaluacion.momento.presente, valor=evaluacion.momento.valor
-    )
+    if "sistema_afectado" in campos:
+        descripcion.sistema_afectado = CampoExtraido(
+            presente=evaluacion.sistema_afectado.presente, valor=evaluacion.sistema_afectado.valor
+        )
+    if "sintoma" in campos:
+        descripcion.sintoma = CampoExtraido(
+            presente=evaluacion.sintoma.presente, valor=evaluacion.sintoma.valor
+        )
+    if "momento" in campos:
+        descripcion.momento = CampoExtraido(
+            presente=evaluacion.momento.presente, valor=evaluacion.momento.valor
+        )
 
 
 def _confirmar_problema_principal(caso: Caso, evaluacion: EvaluacionDescripcion) -> None:
@@ -288,6 +300,86 @@ def _formular_y_registrar_aclaracion(
         )
 
 
+def _formular_y_registrar_aclaraciones_combinadas(
+    caso: Caso, chat_model: BaseChatModel, preguntas_de_campos: list[Aclaracion]
+) -> list[Aclaracion]:
+    """Presenta el lote inicial de aclaraciones pendientes en un único turno (US2, spec 003).
+
+    Combina las preguntas de `preguntas_de_campos` (2 o más) en un solo
+    mensaje, lee una única respuesta, y la reevalúa con el mismo motor usado
+    para la descripción inicial (`evaluar_descripcion`) para extraer los
+    campos que cubra — aplicando (`_aplicar_campos_evaluados`) solo los campos
+    que en ese momento sigan en `campos_faltantes()`, para no sobrescribir un
+    campo ya confirmado que esta respuesta no mencione (`research.md`,
+    Decisión 3 de spec 003). Si el usuario indica que no puede aportar más
+    información (FR-010 de 001), marca todas las preguntas del lote como sin
+    confirmar, igual que hace `_formular_y_registrar_aclaracion` para una sola
+    pregunta. Las preguntas cuyo campo siga sin cubrir se devuelven para que
+    el llamador las formule una por una (bucle existente, sin cambios).
+
+    Parameters
+    ----------
+    caso : Caso
+        Caso en curso.
+    chat_model : BaseChatModel
+        Modelo de chat usado para evaluar la respuesta combinada.
+    preguntas_de_campos : list of Aclaracion
+        Lote inicial de aclaraciones pendientes (2 o más), con `respuesta=None`.
+
+    Returns
+    -------
+    list of Aclaracion
+        Subconjunto de `preguntas_de_campos` cuyo campo sigue sin información,
+        para continuar por el bucle de aclaración uno-por-uno existente.
+    """
+    listado = " ".join(f"{i + 1}) {a.pregunta}" for i, a in enumerate(preguntas_de_campos))
+    pregunta_combinada = (
+        f"Para continuar, cuéntame: {listado} (puedes responder todo junto en un solo mensaje)"
+    )
+    caso.agregar_mensaje("assistant", pregunta_combinada)
+    respuesta = _leer_entrada(f"{pregunta_combinada} ")
+
+    if _indica_que_no_puede_aportar_mas(respuesta):
+        caso.agregar_mensaje("user", respuesta)
+        for aclaracion in preguntas_de_campos:
+            aclaracion.sin_confirmar = True
+            caso.agregar_aclaracion(aclaracion)
+        _imprimir(
+            "Entendido, seguimos con la información disponible. Queda constancia "
+            "de que estos datos no se pudieron confirmar."
+        )
+        return []
+
+    caso.agregar_mensaje("user", respuesta)
+
+    try:
+        evaluacion_respuesta = evaluar_descripcion(chat_model, respuesta, caso.mensajes)
+    except ClarificationEngineError:
+        evaluacion_respuesta = None
+
+    if evaluacion_respuesta is not None:
+        campos_pendientes_antes = caso.descripcion_inicial.campos_faltantes()
+        _aplicar_campos_evaluados(caso, evaluacion_respuesta, campos=campos_pendientes_antes)
+        if evaluacion_respuesta.contradiccion.detectada:
+            _imprimir(
+                "Noté una posible inconsistencia con lo que mencionaste antes: "
+                f"{evaluacion_respuesta.contradiccion.descripcion} "
+                "Voy a conservar ambos datos en el contexto del caso."
+            )
+
+    pendientes: list[Aclaracion] = []
+    for aclaracion in preguntas_de_campos:
+        if aclaracion.campo_objetivo in caso.descripcion_inicial.campos_faltantes():
+            pendientes.append(aclaracion)
+            continue
+        aclaracion.respuesta = respuesta
+        if evaluacion_respuesta is not None and evaluacion_respuesta.contradiccion.detectada:
+            aclaracion.contradice_descripcion_original = True
+        caso.agregar_aclaracion(aclaracion)
+
+    return pendientes
+
+
 def _parece_ruta_de_archivo(texto: str) -> bool:
     """Heurística: ¿`texto` tiene forma de intento de ruta de archivo?
 
@@ -310,6 +402,31 @@ def _parece_ruta_de_archivo(texto: str) -> bool:
     if "\n" in texto or " " in texto or len(texto) > 260:
         return False
     return "/" in texto or "\\" in texto or texto.lower().endswith((".log", ".txt"))
+
+
+def _extraer_ruta_candidata(texto: str) -> str | None:
+    """Busca un token con forma de ruta de archivo de log dentro de `texto` libre.
+
+    Reutiliza el criterio de reconocimiento de `_parece_ruta_de_archivo` (Historia
+    1, spec 003), aplicándolo a cada token de `texto` separado por espacios en vez
+    de a la línea completa — permite detectar una ruta mencionada dentro de una
+    oración más larga (p. ej. la descripción inicial del problema). Si varios
+    tokens cumplen el criterio, se devuelve el último, porque el patrón de uso
+    observado coloca la ruta al final de la oración (ver `research.md`, Decisión 1).
+
+    Parameters
+    ----------
+    texto : str
+        Texto libre en el que buscar una posible ruta de archivo.
+
+    Returns
+    -------
+    str or None
+        El último token de `texto` que parece una ruta de archivo, o `None` si
+        ninguno lo parece.
+    """
+    candidatas = [token for token in texto.split() if _parece_ruta_de_archivo(token)]
+    return candidatas[-1] if candidatas else None
 
 
 def _acumular_lineas_pegadas(primera_linea: str) -> list[str]:
@@ -372,7 +489,7 @@ def _registrar_contenido_pegado(caso: Caso, lineas: list[str]) -> None:
     _imprimir("Anotado el contenido de logs que compartiste.")
 
 
-def _solicitar_evidencia_logs(caso: Caso) -> None:
+def _solicitar_evidencia_logs(caso: Caso, ruta_candidata: str | None = None) -> None:
     """Invita proactivamente a aportar evidencia de logs y registra la fuente (US1).
 
     Se invoca en cuanto la recepción de la incidencia queda con información
@@ -384,15 +501,26 @@ def _solicitar_evidencia_logs(caso: Caso) -> None:
     ----------
     caso : Caso
         Caso con la recepción de incidencia ya completa.
+    ruta_candidata : str or None, optional
+        Ruta de logs ya detectada en el mismo mensaje que la descripción
+        inicial (Historia 1, spec 003 — ver `_procesar_intake`). Si se aporta,
+        se valida directamente (reutilizando la misma rama de
+        validación/reintento de más abajo) en vez de formular la invitación
+        interactiva — la validación de su accesibilidad queda así diferida
+        hasta este punto de la conversación, no antes (`research.md`, Decisión
+        2 de spec 003).
     """
     if caso.fuentes_logs:
         return
 
-    entrada = _leer_entrada(
-        "Ahora que tengo clara la descripción, ¿puedes aportar los logs "
-        "relacionados? Indica la ruta a un archivo, o pega el contenido "
-        "directamente (si son varias líneas, termina con una línea en blanco): "
-    )
+    if ruta_candidata is not None:
+        entrada = ruta_candidata
+    else:
+        entrada = _leer_entrada(
+            "Ahora que tengo clara la descripción, ¿puedes aportar los logs "
+            "relacionados? Indica la ruta a un archivo, o pega el contenido "
+            "directamente (si son varias líneas, termina con una línea en blanco): "
+        )
 
     while True:
         candidata = entrada.strip()
@@ -463,14 +591,20 @@ def _buscar_y_presentar_apreciacion_logs(caso: Caso, chat_model: BaseChatModel) 
         )
 
 
-def _procesar_intake(caso: Caso, chat_model: BaseChatModel) -> None:
+def _procesar_intake(caso: Caso, chat_model: BaseChatModel) -> str | None:
     """Ejecuta el flujo completo de recepción de una incidencia para un caso.
 
     Solicita y registra la descripción inicial (FR-001-003, FR-011), evalúa los
     3 campos requeridos y detecta si describe múltiples problemas (FR-006),
     confirma cuál es el problema principal si aplica, y formula preguntas de
     aclaración para los campos que sigan faltando (FR-007, FR-009), marcando la
-    información como completa cuando ya no falten campos (FR-008).
+    información como completa cuando ya no falten campos (FR-008). Además,
+    detecta si el mensaje inicial ya incluye una ruta de logs (Historia 1, spec
+    003) — de forma independiente al éxito de la evaluación del LLM, porque la
+    detección es puramente léxica. Cuando el lote inicial de preguntas de
+    aclaración tiene 2 o más pendientes, las presenta combinadas en un único
+    turno (Historia 2, spec 003) antes de recurrir al bucle uno-por-uno para lo
+    que siga faltando.
 
     Parameters
     ----------
@@ -478,8 +612,16 @@ def _procesar_intake(caso: Caso, chat_model: BaseChatModel) -> None:
         Caso recién creado (sin descripción registrada) o ya iniciado.
     chat_model : BaseChatModel
         Modelo de chat a usar para evaluar la descripción y las respuestas.
+
+    Returns
+    -------
+    str or None
+        Ruta de logs candidata detectada en el mensaje inicial (FR-001 de spec
+        003), o `None` si no se detectó ninguna. La validación de su
+        accesibilidad se difiere al llamador (ver `_solicitar_evidencia_logs`).
     """
     _solicitar_descripcion(caso)
+    ruta_candidata = _extraer_ruta_candidata(caso.descripcion_inicial.texto)
 
     try:
         evaluacion = evaluar_descripcion(
@@ -491,7 +633,7 @@ def _procesar_intake(caso: Caso, chat_model: BaseChatModel) -> None:
             "comunicación con el motor de aclaración). Continuaré con la "
             "descripción tal como la registraste."
         )
-        return
+        return ruta_candidata
 
     _aplicar_campos_evaluados(caso, evaluacion)
     _confirmar_problema_principal(caso, evaluacion)
@@ -503,7 +645,12 @@ def _procesar_intake(caso: Caso, chat_model: BaseChatModel) -> None:
 
     if not preguntas_de_campos:
         caso.marcar_informacion_completa()
-        return
+        return ruta_candidata
+
+    if len(preguntas_de_campos) >= 2:
+        preguntas_de_campos = _formular_y_registrar_aclaraciones_combinadas(
+            caso, chat_model, preguntas_de_campos
+        )
 
     for aclaracion in preguntas_de_campos:
         if aclaracion.campo_objetivo not in caso.descripcion_inicial.campos_faltantes():
@@ -512,6 +659,8 @@ def _procesar_intake(caso: Caso, chat_model: BaseChatModel) -> None:
 
     if not caso.descripcion_inicial.campos_faltantes():
         caso.marcar_informacion_completa()
+
+    return ruta_candidata
 
 
 def ejecutar_conversacion(chat_model: BaseChatModel | None = None) -> None:
@@ -537,10 +686,10 @@ def ejecutar_conversacion(chat_model: BaseChatModel | None = None) -> None:
         if caso is None or caso.estado_caso == "finalizado":
             caso = Caso()
             _imprimir("--- Nuevo caso ---")
-            _procesar_intake(caso, chat_model)
+            ruta_candidata = _procesar_intake(caso, chat_model)
             _imprimir(caso.resumen())
             if caso.estado_informacion == "completa":
-                _solicitar_evidencia_logs(caso)
+                _solicitar_evidencia_logs(caso, ruta_candidata=ruta_candidata)
                 if caso.fuentes_logs:
                     _buscar_y_presentar_apreciacion_logs(caso, chat_model)
 

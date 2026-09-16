@@ -174,7 +174,11 @@ def buscar_evidencia(
             mensajes = resultado["messages"]
             todas_las_entradas.extend(_extraer_entradas_de_mensajes(mensajes, fuente))
             if mensajes:
-                resumenes_por_fuente.append(str(mensajes[-1].content))
+                # `.text` (no `.content`/`str(...)`): algunos proveedores (p. ej.
+                # Gemini) devuelven `content` como una lista de bloques con campos
+                # adicionales (firmas de razonamiento, etc.) en vez de un string
+                # plano; `.text` normaliza a texto solamente en cualquier proveedor.
+                resumenes_por_fuente.append(mensajes[-1].text)
     except Exception as error:
         raise LogSearchEngineError(
             "Error al comunicarse con el proveedor de modelo subyacente durante "
