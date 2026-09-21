@@ -13,6 +13,7 @@ dependencies = [
     "langgraph>=1.2.11",
     "pydantic>=2.9.0",
     "python-dotenv>=1.0.1",
+    "rich>=15.0.0",
 ]
 # anthropic/ollama/google-genai ya no son dependencias directas: ningún módulo
 # de negocio los importa directamente (confinado a src/opssleuth/llm/factory.py,

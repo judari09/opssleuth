@@ -6,7 +6,10 @@ logs (spec 002). Depende únicamente de `opssleuth.domain.case`, del módulo de
 aclaración (`opssleuth.clarification.engine`) y de un `BaseChatModel` ya
 construido (inyectado vía `opssleuth.llm.factory.crear_modelo_chat`) — nunca de
 un SDK de proveedor de modelo concreto directamente (Principio II de la
-constitución).
+constitución). La presentación (etiquetas de rol, color, renderizado Markdown,
+indicador de actividad — spec 004) se delega en
+`opssleuth.presentation.console`, el único módulo que importa `rich`; `cli.py`
+no importa `rich` directamente.
 """
 
 from __future__ import annotations
@@ -27,6 +30,11 @@ from opssleuth.domain.case import Aclaracion, CampoExtraido, Caso, DescripcionVa
 from opssleuth.domain.log_evidence import FuenteDeLogs
 from opssleuth.evidence.engine import LogSearchEngineError, buscar_evidencia
 from opssleuth.llm.factory import crear_modelo_chat
+from opssleuth.presentation.console import (
+    leer_entrada_usuario,
+    mostrar_actividad,
+    mostrar_mensaje_sistema,
+)
 
 FRASES_SALIDA = ("salir", "exit", "quit")
 FRASES_NUEVO_CASO = ("nuevo caso", "otro problema", "reportar otro", "quiero reportar")
@@ -50,6 +58,10 @@ UMBRAL_LINEAS_PEGADAS = 4
 def _leer_entrada(prompt: str) -> str:
     """Lee una línea de entrada del usuario desde stdin.
 
+    Delega en `opssleuth.presentation.console.leer_entrada_usuario` (spec
+    004): muestra `prompt` (si lo hay) como mensaje del sistema con su
+    etiqueta de rol, luego la etiqueta de rol del usuario, y lee la línea.
+
     Parameters
     ----------
     prompt : str
@@ -60,18 +72,27 @@ def _leer_entrada(prompt: str) -> str:
     str
         Texto escrito por el usuario.
     """
-    return input(prompt)
+    return leer_entrada_usuario(prompt)
 
 
-def _imprimir(mensaje: str) -> None:
+def _imprimir(mensaje: str, *, es_error: bool = False) -> None:
     """Muestra un mensaje del sistema al usuario.
+
+    Delega en `opssleuth.presentation.console.mostrar_mensaje_sistema` (spec
+    004): añade la etiqueta de rol del sistema y renderiza `mensaje` como
+    Markdown.
 
     Parameters
     ----------
     mensaje : str
         Texto a mostrar.
+    es_error : bool, optional
+        Si `True`, distingue visualmente `mensaje` como un fallo o
+        advertencia (p. ej. un error de comunicación con el proveedor de
+        modelo) en vez de una respuesta normal (FR-005 de spec 004). `False`
+        por defecto.
     """
-    print(mensaje)
+    mostrar_mensaje_sistema(mensaje, es_error=es_error)
 
 
 def _es_intencion_nuevo_caso(texto: str) -> bool:
@@ -250,7 +271,8 @@ def _formular_y_registrar_aclaracion(
     Incorpora la respuesta al contexto del caso (FR-008), detecta si el usuario
     indica que no puede aportar más información (FR-010), y detecta
     contradicciones con el contexto ya registrado sin descartar ningún dato
-    (edge case de contradicción).
+    (edge case de contradicción). Muestra un indicador de actividad mientras
+    se evalúa la respuesta (FR-004 de spec 004).
 
     Parameters
     ----------
@@ -278,7 +300,8 @@ def _formular_y_registrar_aclaracion(
     aclaracion.respuesta = respuesta
 
     try:
-        evaluacion_respuesta = evaluar_descripcion(chat_model, respuesta, caso.mensajes)
+        with mostrar_actividad("Pensando..."):
+            evaluacion_respuesta = evaluar_descripcion(chat_model, respuesta, caso.mensajes)
     except ClarificationEngineError:
         evaluacion_respuesta = None
 
@@ -316,6 +339,8 @@ def _formular_y_registrar_aclaraciones_combinadas(
     confirmar, igual que hace `_formular_y_registrar_aclaracion` para una sola
     pregunta. Las preguntas cuyo campo siga sin cubrir se devuelven para que
     el llamador las formule una por una (bucle existente, sin cambios).
+    Muestra un indicador de actividad mientras se evalúa la respuesta
+    combinada (FR-004 de spec 004).
 
     Parameters
     ----------
@@ -353,7 +378,8 @@ def _formular_y_registrar_aclaraciones_combinadas(
     caso.agregar_mensaje("user", respuesta)
 
     try:
-        evaluacion_respuesta = evaluar_descripcion(chat_model, respuesta, caso.mensajes)
+        with mostrar_actividad("Pensando..."):
+            evaluacion_respuesta = evaluar_descripcion(chat_model, respuesta, caso.mensajes)
     except ClarificationEngineError:
         evaluacion_respuesta = None
 
@@ -561,7 +587,12 @@ def _buscar_y_presentar_apreciacion_logs(caso: Caso, chat_model: BaseChatModel) 
     """Invoca `buscar_evidencia` y presenta la apreciación resultante (US2/US3).
 
     Guarda el resultado en `Caso.apreciacion_logs` (FR-010) para que quede
-    disponible en el contexto del caso para referencias posteriores.
+    disponible en el contexto del caso para referencias posteriores. Muestra
+    un indicador de actividad mientras se ejecuta la búsqueda (FR-004 de spec
+    004) — si el agente invoca `preguntar_al_usuario` durante la búsqueda
+    (spec 002, US4), el indicador se pausa automáticamente alrededor del
+    mensaje/lectura intercalados (comportamiento nativo de
+    `rich.console.Console.status`), sin afectar el valor leído.
 
     Parameters
     ----------
@@ -570,15 +601,16 @@ def _buscar_y_presentar_apreciacion_logs(caso: Caso, chat_model: BaseChatModel) 
     chat_model : BaseChatModel
         Modelo de chat a usar para la búsqueda.
     """
-    _imprimir("Buscando en los logs aportados...")
     try:
-        apreciacion = buscar_evidencia(
-            chat_model, caso, caso.fuentes_logs, _preguntar_al_usuario_cli
-        )
+        with mostrar_actividad("Buscando en los logs aportados..."):
+            apreciacion = buscar_evidencia(
+                chat_model, caso, caso.fuentes_logs, _preguntar_al_usuario_cli
+            )
     except LogSearchEngineError:
         _imprimir(
             "No pude completar la búsqueda en los logs en este momento (error "
-            "de comunicación con el motor de búsqueda)."
+            "de comunicación con el motor de búsqueda).",
+            es_error=True,
         )
         return
 
@@ -604,7 +636,8 @@ def _procesar_intake(caso: Caso, chat_model: BaseChatModel) -> str | None:
     detección es puramente léxica. Cuando el lote inicial de preguntas de
     aclaración tiene 2 o más pendientes, las presenta combinadas en un único
     turno (Historia 2, spec 003) antes de recurrir al bucle uno-por-uno para lo
-    que siga faltando.
+    que siga faltando. Muestra un indicador de actividad mientras se evalúa la
+    descripción inicial (FR-004 de spec 004).
 
     Parameters
     ----------
@@ -624,14 +657,16 @@ def _procesar_intake(caso: Caso, chat_model: BaseChatModel) -> str | None:
     ruta_candidata = _extraer_ruta_candidata(caso.descripcion_inicial.texto)
 
     try:
-        evaluacion = evaluar_descripcion(
-            chat_model, caso.descripcion_inicial.texto, caso.mensajes
-        )
+        with mostrar_actividad("Pensando..."):
+            evaluacion = evaluar_descripcion(
+                chat_model, caso.descripcion_inicial.texto, caso.mensajes
+            )
     except ClarificationEngineError:
         _imprimir(
             "No pude evaluar la descripción en este momento (error de "
             "comunicación con el motor de aclaración). Continuaré con la "
-            "descripción tal como la registraste."
+            "descripción tal como la registraste.",
+            es_error=True,
         )
         return ruta_candidata
 
