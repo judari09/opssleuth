@@ -160,6 +160,16 @@ class TestExtensionEvidenciaLogs:
         assert Caso().apreciacion_logs is None
 
 
+class TestExtensionEvidenciaBD:
+    """Pruebas de la extensión de ``Caso`` para la spec 005 (fuentes_bd/apreciacion_bd)."""
+
+    def test_fuentes_bd_vacia_por_defecto(self):
+        assert Caso().fuentes_bd == []
+
+    def test_apreciacion_bd_none_por_defecto(self):
+        assert Caso().apreciacion_bd is None
+
+
 class TestDescripcionProblemaCamposFaltantes:
     """Pruebas de ``DescripcionProblema.campos_faltantes`` (FR-006)."""
 

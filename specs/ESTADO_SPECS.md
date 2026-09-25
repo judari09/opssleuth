@@ -32,6 +32,7 @@ cuenta una funcionalidad ya implementada por otra spec.
 | 002 | Búsqueda en Archivos de Logs | [`specs/002-busqueda-logs/`](002-busqueda-logs/) | ✅ Implementada (29/30 tareas, 72/72 pruebas — T030 pendiente: validación manual con proveedor real, ver nota en `tasks.md`) | `002-busqueda-logs` | 2026-09-07 | Segunda herramienta de investigación: una vez completada la recepción de la incidencia (001), el sistema invita a aportar evidencia de logs (ruta o texto pegado), localiza entradas relacionadas con el incidente sin cargar el archivo completo, aísla por horario si se conoce, y carga una apreciación inicial **consolidada** (acotada si hay muchas coincidencias) en el contexto del caso. **Alcance ampliado**: además del motor nuevo, migra el motor de aclaración de 001 a la arquitectura basada en LangChain/LangGraph adoptada en esta spec. |
 | 003 | Conversación Adaptativa | [`specs/003-conversacion-adaptativa/`](003-conversacion-adaptativa/) | ✅ Implementada (15/15 tareas, 87/87 pruebas) | `003-conversacion-adaptativa` | 2026-09-14 | Reduce la rigidez del flujo guiado de 001/002 para usuarios con más experiencia en la herramienta: reconoce una **ruta de archivo** de logs aportada en el mismo mensaje que la descripción inicial (sin volver a pedirla; validación diferida hasta completar la recepción), y permite responder de una vez el **lote inicial** de aclaraciones pendientes en un solo mensaje en vez de una por una (reutilizando `evaluar_descripcion`) — preservando sin regresiones el flujo guiado paso a paso ya implementado para quien no combina información. Sin entidades de dominio, dependencias ni contratos nuevos — cambio confinado a `src/opssleuth/cli.py` (ver `plan.md`/`research.md`). |
 | 004 | CLI Chat Enriquecida | [`specs/004-cli-chat-enriquecida/`](004-cli-chat-enriquecida/) | ✅ Implementada (18/18 tareas, 98/98 pruebas) | `004-cli-chat-enriquecida` | 2026-09-16 | Cambio puramente de presentación sobre la CLI ya implementada (001/002/003): diferencia visualmente las entradas del usuario de las respuestas del sistema mediante una **etiqueta textual de rol obligatoria** (reforzada con color, nunca dependiente solo de él), renderiza contenido estructurado (listas, énfasis) de forma legible con `rich.markdown.Markdown`, e indica visualmente actividad/errores — sin alterar el comportamiento conversacional ya existente (verificado: `_imprimir`/`_leer_entrada` de `cli.py` preservan su contrato de llamada). `rich` (nueva dependencia) confinada a `src/opssleuth/presentation/console.py`. |
+| 005 | Consultas a Bases de Datos | [`specs/005-consultas-base-datos/`](005-consultas-base-datos/) | ✅ Implementada (28/28 tareas, 162/162 pruebas) | `005-consultas-base-datos` | 2026-09-21 | Nueva fuente de evidencia para el diagnóstico, independiente de la búsqueda de logs (002, ver Clarifications): el agente consulta una base de datos configurada (consultas simples de una tabla y consultas complejas con cruces entre más de dos tablas) para correlacionar el incidente con el estado real de los datos. **Barandilla de seguridad central (Historia 2, P1, no negociable)**: validación en dos capas antes de ejecutar — `sqlglot` rechaza cualquier consulta que no sea una única sentencia `SELECT` o que referencie una tabla fuera de `OPSSLEUTH_DB_TABLAS_PERMITIDAS`, más conexión de solo lectura cuando el dialecto lo soporta. Conexión y alcance configurados una sola vez vía `.env` (`OPSSLEUTH_DB_URL`/`OPSSLEUTH_DB_TABLAS_PERMITIDAS`), nunca conversacionalmente. Cada consulta se anuncia visiblemente (reutiliza el indicador de actividad de 004) antes de mostrar el resultado. Nuevo paquete `database/` (análogo a `evidence/`); `sqlalchemy`/`sqlglot` confinados ahí. |
 
 **Estados posibles**: 📝 Draft (spec.md sin clarificar) · ❓ Clarificada · 📐
 Planificada (plan.md listo) · 📋 Tareas generadas (tasks.md listo) · 🚧 En
@@ -129,14 +130,20 @@ vigente; el patrón original queda documentado como registro histórico en
 - **Excepciones de dominio**: errores de comunicación con el proveedor deben
   propagarse como `ClarificationEngineError`/`LogSearchEngineError` según el
   flujo (nunca la excepción nativa de LangChain o del SDK) — ver Regla 4 de
-  `clarification_migration.md` y Regla 3 de `log_search_engine.md`.
+  `clarification_migration.md` y Regla 3 de `log_search_engine.md`. 005 añade
+  `DatabaseSearchEngineError` con el mismo criterio (ver
+  `005-consultas-base-datos/contracts/database_query_engine.md`, Regla 5).
 - **Nuevas dependencias**: `langchain-core`, `langchain-anthropic`,
   `langchain-ollama`, `langgraph` (ver
   [`specs/002-busqueda-logs/research.md`](002-busqueda-logs/research.md),
   "Nuevas dependencias"); `langchain-google-genai` añadida el 2026-09-14 junto
   con el proveedor `gemini`. `anthropic`/`ollama`/`google-genai` permanecen
   como dependencias transitivas, ya no importadas directamente en código de
-  negocio.
+  negocio. `sqlalchemy`/`sqlglot` añadidas por 005 (ver
+  `005-consultas-base-datos/research.md`, Decisiones 1-2), confinadas al
+  paquete `database/` nuevo — no invocan la excepción de "estándar de
+  abstracción de terceros maduro" (siguen el camino por defecto del Principio
+  II, mismo criterio ya aplicado a `rich` en 004).
 - **Cómputo determinista sobre auto-enumeración del LLM**: patrón establecido en
   001 (`generar_preguntas`) y reforzado en 002 (`entradas_destacadas` de
   `ApreciacionInicialLogs`, calculada a partir de los `ToolMessage` reales del
@@ -162,6 +169,14 @@ vigente; el patrón original queda documentado como registro histórico en
 - `FuenteDeLogs`, `EntradaLogRelevante`, `ApreciacionInicialLogs` en
   `src/opssleuth/domain/log_evidence.py` (nuevas en 002, ver
   [`specs/002-busqueda-logs/data-model.md`](002-busqueda-logs/data-model.md)).
+  005 extiende `Caso` de nuevo, in-place, con `Caso.fuentes_bd`/`Caso.apreciacion_bd`
+  y añade `FuenteDeBaseDeDatos`, `EntradaBDRelevante`, `ApreciacionInicialBD` en
+  `src/opssleuth/domain/database_evidence.py` (ver
+  [`specs/005-consultas-base-datos/data-model.md`](005-consultas-base-datos/data-model.md))
+  — mismo patrón de extensión in-place, no una entidad de caso paralela.
+  `FuenteDeBaseDeDatos` nunca contiene la cadena de conexión ni credenciales
+  (solo `motor` derivado del esquema de la URL) — esas viven únicamente en el
+  `Engine` de SQLAlchemy inyectado, nunca serializadas en un objeto de dominio.
 - Un caso a la vez por conversación; varios casos secuenciales permitidos
   (FR-013/FR-014 de 001). Sin colaboración multiusuario sobre un mismo caso
   (FR-015 de 001).

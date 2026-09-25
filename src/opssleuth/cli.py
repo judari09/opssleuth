@@ -1,15 +1,16 @@
 """Bucle conversacional de la CLI de OpsSleuth.
 
 Orquesta la recepción de incidencias (spec 001: descripción inicial, contexto
-de la conversación, aclaración ante ambigüedad) y la búsqueda de evidencia en
-logs (spec 002). Depende únicamente de `opssleuth.domain.case`, del módulo de
-aclaración (`opssleuth.clarification.engine`) y de un `BaseChatModel` ya
-construido (inyectado vía `opssleuth.llm.factory.crear_modelo_chat`) — nunca de
-un SDK de proveedor de modelo concreto directamente (Principio II de la
-constitución). La presentación (etiquetas de rol, color, renderizado Markdown,
-indicador de actividad — spec 004) se delega en
-`opssleuth.presentation.console`, el único módulo que importa `rich`; `cli.py`
-no importa `rich` directamente.
+de la conversación, aclaración ante ambigüedad), la búsqueda de evidencia en
+logs (spec 002) y la consulta de evidencia en base de datos (spec 005).
+Depende únicamente de `opssleuth.domain.case`, del módulo de aclaración
+(`opssleuth.clarification.engine`) y de un `BaseChatModel` ya construido
+(inyectado vía `opssleuth.llm.factory.crear_modelo_chat`) — nunca de un SDK de
+proveedor de modelo concreto directamente (Principio II de la constitución).
+La presentación (etiquetas de rol, color, renderizado Markdown, indicador de
+actividad — spec 004) se delega en `opssleuth.presentation.console`, el único
+módulo que importa `rich`; `cli.py` no importa `rich`/`sqlalchemy`/`sqlglot`
+directamente.
 """
 
 from __future__ import annotations
@@ -26,6 +27,12 @@ from opssleuth.clarification.engine import (
     evaluar_descripcion,
     generar_preguntas,
 )
+from opssleuth.database.engine import DatabaseSearchEngineError, consultar_evidencia_bd
+from opssleuth.database.factory import (
+    ConexionBaseDeDatosError,
+    FuenteDeBaseDeDatosConfigurada,
+    crear_motor_bd,
+)
 from opssleuth.domain.case import Aclaracion, CampoExtraido, Caso, DescripcionVaciaError
 from opssleuth.domain.log_evidence import FuenteDeLogs
 from opssleuth.evidence.engine import LogSearchEngineError, buscar_evidencia
@@ -33,6 +40,7 @@ from opssleuth.llm.factory import crear_modelo_chat
 from opssleuth.presentation.console import (
     leer_entrada_usuario,
     mostrar_actividad,
+    mostrar_banner,
     mostrar_mensaje_sistema,
 )
 
@@ -623,6 +631,48 @@ def _buscar_y_presentar_apreciacion_logs(caso: Caso, chat_model: BaseChatModel) 
         )
 
 
+def _consultar_y_presentar_apreciacion_bd(
+    caso: Caso, chat_model: BaseChatModel, fuente_bd: FuenteDeBaseDeDatosConfigurada
+) -> None:
+    """Invoca `consultar_evidencia_bd` y presenta la apreciación resultante (spec 005).
+
+    Guarda el resultado en `Caso.apreciacion_bd` (FR-009) para que quede
+    disponible en el contexto del caso para referencias posteriores. Se
+    invoca de forma **independiente** de si hay evidencia de logs para el
+    caso (Clarifications de `specs/005-consultas-base-datos/spec.md`, Sesión
+    2026-09-21, Pregunta 3) — nunca condicionada a `caso.fuentes_logs`.
+
+    Parameters
+    ----------
+    caso : Caso
+        Caso con la recepción de incidencia ya completa.
+    chat_model : BaseChatModel
+        Modelo de chat a usar para la consulta.
+    fuente_bd : FuenteDeBaseDeDatosConfigurada
+        Conexión y alcance de tablas ya construidos (ver
+        `opssleuth.database.factory.crear_motor_bd`).
+    """
+    try:
+        apreciacion = consultar_evidencia_bd(
+            chat_model, caso, fuente_bd, anunciar_actividad=mostrar_actividad
+        )
+    except DatabaseSearchEngineError:
+        _imprimir(
+            "No pude completar la consulta a la base de datos en este momento "
+            "(error de comunicación con el motor de consulta).",
+            es_error=True,
+        )
+        return
+
+    caso.apreciacion_bd = apreciacion
+    _imprimir(apreciacion.resumen)
+    if apreciacion.hay_mas_resultados:
+        _imprimir(
+            "Hay más resultados además de los mostrados arriba; puedo "
+            "profundizar si lo necesitas."
+        )
+
+
 def _procesar_intake(caso: Caso, chat_model: BaseChatModel) -> str | None:
     """Ejecuta el flujo completo de recepción de una incidencia para un caso.
 
@@ -698,6 +748,35 @@ def _procesar_intake(caso: Caso, chat_model: BaseChatModel) -> str | None:
     return ruta_candidata
 
 
+def _intentar_crear_motor_bd() -> FuenteDeBaseDeDatosConfigurada | None:
+    """Intenta construir la conexión a base de datos configurada (spec 005).
+
+    Envuelve `crear_motor_bd()`: si la base de datos está configurada pero no
+    es accesible (`ConexionBaseDeDatosError`), informa al usuario y devuelve
+    `None` — la conversación continúa sin esa fuente de evidencia (US1,
+    Escenario 3 de `specs/005-consultas-base-datos/spec.md`). Un error de
+    configuración (`TablasPermitidasNoConfiguradasError`) se deja propagar
+    sin capturar, igual que las excepciones de configuración equivalentes de
+    `crear_modelo_chat()` — es un fallo del operador, no del entorno de
+    ejecución.
+
+    Returns
+    -------
+    FuenteDeBaseDeDatosConfigurada or None
+        La fuente configurada, o `None` si no está configurada o no es
+        accesible en este momento.
+    """
+    try:
+        return crear_motor_bd()
+    except ConexionBaseDeDatosError:
+        _imprimir(
+            "No pude conectarme a la base de datos configurada; continuaré "
+            "sin esa fuente de evidencia.",
+            es_error=True,
+        )
+        return None
+
+
 def ejecutar_conversacion(chat_model: BaseChatModel | None = None) -> None:
     """Ejecuta el bucle principal de la conversación de OpsSleuth.
 
@@ -705,7 +784,11 @@ def ejecutar_conversacion(chat_model: BaseChatModel | None = None) -> None:
     (o tras finalizar uno) crea un caso nuevo y ejecuta su intake; mientras un
     caso está activo, responde a solicitudes de resumen (FR-005) y a la
     intención de reportar un problema nuevo, bloqueando casos en paralelo hasta
-    que se confirme finalizar el actual (FR-013, FR-014).
+    que se confirme finalizar el actual (FR-013, FR-014). Si hay una base de
+    datos configurada (spec 005), la construye una única vez para toda la
+    conversación (mismo patrón que `chat_model`) y, tras completar el intake
+    de cada caso, consulta esa fuente de forma independiente de si hay
+    evidencia de logs.
 
     Parameters
     ----------
@@ -716,6 +799,7 @@ def ejecutar_conversacion(chat_model: BaseChatModel | None = None) -> None:
     """
     chat_model = chat_model or crear_modelo_chat()
     caso: Caso | None = None
+    fuente_bd = _intentar_crear_motor_bd()
 
     while True:
         if caso is None or caso.estado_caso == "finalizado":
@@ -727,6 +811,11 @@ def ejecutar_conversacion(chat_model: BaseChatModel | None = None) -> None:
                 _solicitar_evidencia_logs(caso, ruta_candidata=ruta_candidata)
                 if caso.fuentes_logs:
                     _buscar_y_presentar_apreciacion_logs(caso, chat_model)
+                if fuente_bd is not None:
+                    # Independiente de la evidencia de logs (spec 005,
+                    # Clarifications Sesión 2026-09-21, Pregunta 3) — nunca
+                    # condicionado a `caso.fuentes_logs`.
+                    _consultar_y_presentar_apreciacion_bd(caso, chat_model, fuente_bd)
 
         entrada = _leer_entrada(
             "\n¿Algo más sobre este caso? (o 'nuevo caso' / 'salir'): "
@@ -752,6 +841,8 @@ def ejecutar_conversacion(chat_model: BaseChatModel | None = None) -> None:
             _imprimir(caso.resumen())
             if caso.apreciacion_logs is not None:
                 _imprimir(caso.apreciacion_logs.resumen)
+            if caso.apreciacion_bd is not None:
+                _imprimir(caso.apreciacion_bd.resumen)
             continue
 
         if entrada.strip() and os.path.isfile(entrada.strip()):
@@ -768,12 +859,15 @@ def ejecutar_conversacion(chat_model: BaseChatModel | None = None) -> None:
 def main() -> None:
     """Punto de entrada de la CLI (``python -m opssleuth.cli``).
 
-    Antes de arrancar la conversación, carga las variables de entorno
-    definidas en un archivo ``.env`` en el directorio de trabajo (si existe),
-    sin sobrescribir las que ya estén definidas en el entorno — así
+    Muestra el banner de bienvenida (texto literal, sin etiqueta de rol ni
+    Markdown — ver `mostrar_banner`) antes de arrancar la conversación. Antes
+    de arrancar la conversación, carga las variables de entorno definidas en
+    un archivo ``.env`` en el directorio de trabajo (si existe), sin
+    sobrescribir las que ya estén definidas en el entorno — así
     `crear_modelo_chat` (y cualquier otra lectura de `os.environ`) las ve
     igual que si se hubieran exportado manualmente.
     """
+    mostrar_banner()
     load_dotenv()
     try:
         ejecutar_conversacion()

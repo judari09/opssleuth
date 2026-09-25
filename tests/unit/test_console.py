@@ -4,11 +4,15 @@ import io
 
 from rich.console import Console
 
+from opssleuth.presentation import console as console_module
 from opssleuth.presentation.console import (
+    BANNER_OPSSLEUTH,
+    BANNER_OPSSLEUTH_ASCII,
     ETIQUETA_SISTEMA,
     ETIQUETA_USUARIO,
     leer_entrada_usuario,
     mostrar_actividad,
+    mostrar_banner,
     mostrar_mensaje_sistema,
 )
 
@@ -92,6 +96,52 @@ class TestLeerEntradaUsuario:
 
     def test_etiquetas_de_usuario_y_sistema_son_distintas(self):
         assert ETIQUETA_USUARIO != ETIQUETA_SISTEMA
+
+
+class TestMostrarBanner:
+    """Banner de bienvenida (arte ASCII) — no es un mensaje conversacional."""
+
+    def test_imprime_el_banner_por_defecto_sin_lanzar(self):
+        console, buffer = _console_en_memoria()
+        mostrar_banner(console=console)
+        assert "OPSSLEUTH" in buffer.getvalue().upper().replace(" ", "").replace("\n", "") or (
+            buffer.getvalue().strip() != ""
+        )
+
+    def test_no_incluye_la_etiqueta_de_rol_del_sistema(self):
+        console, buffer = _console_en_memoria()
+        mostrar_banner(console=console)
+        assert ETIQUETA_SISTEMA not in buffer.getvalue()
+
+    def test_no_procesa_el_texto_como_markdown(self):
+        console, buffer = _console_en_memoria()
+        mostrar_banner("**esto no debe resaltarse**", console=console)
+        # a diferencia de mostrar_mensaje_sistema, los símbolos de marcado
+        # deben conservarse tal cual (texto literal, no Markdown)
+        assert "**esto no debe resaltarse**" in buffer.getvalue()
+
+    def test_banner_ascii_alternativo_es_puramente_ascii(self):
+        """Garantiza que el respaldo siga siendo seguro para consolas sin
+        soporte de caracteres fuera de ASCII (regresión: research.md)."""
+        assert all(ord(caracter) < 128 for caracter in BANNER_OPSSLEUTH_ASCII)
+
+    def test_recurre_al_banner_ascii_si_falla_la_codificacion(self, monkeypatch):
+        console, buffer = _console_en_memoria()
+        llamadas = {"n": 0}
+        print_original = console.print
+
+        def print_falla_una_vez(*args, **kwargs):
+            llamadas["n"] += 1
+            if llamadas["n"] == 1:
+                raise UnicodeEncodeError("ascii", "x", 0, 1, "simulado")
+            return print_original(*args, **kwargs)
+
+        monkeypatch.setattr(console, "print", print_falla_una_vez)
+        monkeypatch.setattr(console_module, "Console", lambda file: console)
+
+        mostrar_banner(BANNER_OPSSLEUTH, console=console)  # no debe propagar la excepción
+
+        assert llamadas["n"] == 2
 
 
 class TestMostrarActividad:

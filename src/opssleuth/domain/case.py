@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal
 
+from opssleuth.domain.database_evidence import ApreciacionInicialBD, FuenteDeBaseDeDatos
 from opssleuth.domain.log_evidence import ApreciacionInicialLogs, FuenteDeLogs
 
 EstadoInformacion = Literal["pendiente_descripcion", "pendiente_aclaracion", "completa"]
@@ -146,6 +147,13 @@ class Caso:
     apreciacion_logs : ApreciacionInicialLogs or None
         Apreciación inicial consolidada de logs, una vez producida (spec 002,
         FR-010); None mientras no se haya buscado evidencia.
+    fuentes_bd : list of FuenteDeBaseDeDatos
+        Fuentes de base de datos configuradas y disponibles para el caso
+        (spec 005, Historia 1). En esta implementación, como máximo un
+        elemento (ver specs/005-consultas-base-datos/research.md, Decisión 7).
+    apreciacion_bd : ApreciacionInicialBD or None
+        Apreciación inicial de evidencia de base de datos, una vez producida
+        (spec 005, FR-009); None mientras no se haya consultado.
     """
 
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -157,6 +165,8 @@ class Caso:
     creado_en: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     fuentes_logs: list[FuenteDeLogs] = field(default_factory=list)
     apreciacion_logs: ApreciacionInicialLogs | None = None
+    fuentes_bd: list[FuenteDeBaseDeDatos] = field(default_factory=list)
+    apreciacion_bd: ApreciacionInicialBD | None = None
 
     def registrar_descripcion(self, texto: str) -> DescripcionProblema:
         """Registra la descripción inicial del caso (FR-002).

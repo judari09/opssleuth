@@ -11,3 +11,7 @@ wheels/
 .venv
 # Variables de entorno locales (pueden contener secretos, p. ej. ANTHROPIC_API_KEY)
 .env
+
+# Base de datos SQLite de prueba generada por test_db/generar_base_de_datos.py
+# (regenerable, no aporta como diff versionado — el generador sí se versiona)
+test_db/facturacion.db

@@ -1,0 +1,44 @@
+{
+  "$comment": "Referencia de contenido (nombre, descripcion, parametros) de las 3 herramientas del agente de consulta a base de datos. Igual que en specs/002-busqueda-logs/contracts/tools_schema.json, se implementan como funciones Python decoradas con @tool (langchain_core.tools), cuyo esquema real se auto-deriva de las anotaciones de tipo y el docstring de cada funcion -- este JSON no se carga literalmente como input_schema en tiempo de ejecucion. Se conserva como referencia de diseno: el texto de 'description' de cada herramienta debe trasladarse al docstring de la funcion @tool correspondiente.",
+  "tools": [
+    {
+      "name": "listar_tablas_disponibles",
+      "description": "Devuelve los nombres de las tablas a las que esta consulta tiene acceso. Usar al iniciar el analisis, para saber con que tablas se puede trabajar sin necesidad de adivinar o asumir nombres.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "describir_tabla",
+      "description": "Devuelve las columnas (nombre y tipo) de una tabla permitida. Usar antes de construir una consulta (simple o con cruces entre varias tablas) que referencie esa tabla, para conocer sus columnas reales. Rechaza la solicitud si 'tabla' no esta dentro del conjunto de tablas permitidas.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "tabla": {
+            "type": "string",
+            "description": "Nombre de la tabla permitida a describir."
+          }
+        },
+        "required": ["tabla"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ejecutar_consulta_sql",
+      "description": "Valida y ejecuta una consulta de solo lectura (una unica sentencia SELECT) contra la base de datos configurada. Usar para obtener filas concretas relacionadas con el incidente -- consultas simples de una sola tabla, o consultas complejas con cruces (joins) entre mas de dos tablas, segun lo requiera el diagnostico. La consulta se rechaza sin ejecutarse si no es una unica sentencia SELECT, o si referencia alguna tabla fuera del conjunto permitido. El volumen de filas devuelto esta acotado -- si hay mas resultados de los devueltos, la respuesta lo indica explicitamente en vez de omitirlo.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "consulta": {
+            "type": "string",
+            "description": "Texto SQL de una unica sentencia SELECT de solo lectura."
+          }
+        },
+        "required": ["consulta"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

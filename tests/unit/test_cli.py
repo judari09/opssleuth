@@ -11,7 +11,10 @@ from opssleuth.clarification.engine import (
     MultiplesProblemas,
     PreguntaSugerida,
 )
+from opssleuth.database.engine import DatabaseSearchEngineError
+from opssleuth.database.factory import ConexionBaseDeDatosError, FuenteDeBaseDeDatosConfigurada
 from opssleuth.domain.case import Aclaracion, CampoExtraido, Caso, DescripcionVaciaError
+from opssleuth.domain.database_evidence import ApreciacionInicialBD, FuenteDeBaseDeDatos
 
 
 class SecuenciaEvaluaciones:
@@ -642,3 +645,88 @@ class TestSolicitarEvidenciaLogs:
         )
 
         cli._solicitar_evidencia_logs(caso)  # no debe lanzar ni pedir entrada
+
+
+def _fuente_bd_configurada():
+    return FuenteDeBaseDeDatosConfigurada(
+        engine=MagicMock(),
+        fuente=FuenteDeBaseDeDatos(motor="sqlite", tablas_permitidas=["facturas"]),
+        timeout_segundos=10,
+    )
+
+
+class TestConsultarYPresentarApreciacionBD:
+    """Pruebas de integración de `_consultar_y_presentar_apreciacion_bd` (spec 005)."""
+
+    def test_apreciacion_queda_registrada_y_se_presenta(self, monkeypatch):
+        apreciacion = ApreciacionInicialBD(resumen="La factura 1007 está en estado fallida.")
+        monkeypatch.setattr(
+            cli, "consultar_evidencia_bd", lambda *a, **k: apreciacion
+        )
+        mensajes_impresos = []
+        monkeypatch.setattr(cli, "_imprimir", lambda m, **k: mensajes_impresos.append(m))
+        caso = Caso()
+
+        cli._consultar_y_presentar_apreciacion_bd(caso, MagicMock(), _fuente_bd_configurada())
+
+        assert caso.apreciacion_bd is apreciacion
+        assert any("1007" in m for m in mensajes_impresos)
+
+    def test_hay_mas_resultados_se_informa(self, monkeypatch):
+        apreciacion = ApreciacionInicialBD(resumen="...", hay_mas_resultados=True)
+        monkeypatch.setattr(cli, "consultar_evidencia_bd", lambda *a, **k: apreciacion)
+        mensajes_impresos = []
+        monkeypatch.setattr(cli, "_imprimir", lambda m, **k: mensajes_impresos.append(m))
+        caso = Caso()
+
+        cli._consultar_y_presentar_apreciacion_bd(caso, MagicMock(), _fuente_bd_configurada())
+
+        assert any("más resultados" in m.lower() for m in mensajes_impresos)
+
+    def test_error_de_comunicacion_informa_y_no_bloquea(self, monkeypatch):
+        def _lanzar(*args, **kwargs):
+            raise DatabaseSearchEngineError("fallo simulado")
+
+        monkeypatch.setattr(cli, "consultar_evidencia_bd", _lanzar)
+        llamadas_error = []
+
+        def _imprimir_espia(mensaje, *, es_error=False):
+            llamadas_error.append(es_error)
+
+        monkeypatch.setattr(cli, "_imprimir", _imprimir_espia)
+        caso = Caso()
+
+        cli._consultar_y_presentar_apreciacion_bd(caso, MagicMock(), _fuente_bd_configurada())
+
+        assert caso.apreciacion_bd is None
+        assert any(llamadas_error)  # al menos un mensaje se marcó como error
+
+
+class TestIntentarCrearMotorBD:
+    """Pruebas de `_intentar_crear_motor_bd` (spec 005)."""
+
+    def test_devuelve_la_fuente_si_esta_disponible(self, monkeypatch):
+        fuente = _fuente_bd_configurada()
+        monkeypatch.setattr(cli, "crear_motor_bd", lambda: fuente)
+
+        assert cli._intentar_crear_motor_bd() is fuente
+
+    def test_devuelve_none_si_no_hay_ninguna_configurada(self, monkeypatch):
+        monkeypatch.setattr(cli, "crear_motor_bd", lambda: None)
+
+        assert cli._intentar_crear_motor_bd() is None
+
+    def test_conexion_inaccesible_informa_y_devuelve_none(self, monkeypatch):
+        def _lanzar():
+            raise ConexionBaseDeDatosError("no se pudo conectar")
+
+        monkeypatch.setattr(cli, "crear_motor_bd", _lanzar)
+        llamadas_error = []
+
+        def _imprimir_espia(mensaje, *, es_error=False):
+            llamadas_error.append(es_error)
+
+        monkeypatch.setattr(cli, "_imprimir", _imprimir_espia)
+
+        assert cli._intentar_crear_motor_bd() is None
+        assert any(llamadas_error)
