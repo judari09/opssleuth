@@ -1,0 +1,104 @@
+site_name: OpsSleuth
+site_description: >-
+  Diagnóstico asistido por IA para sistemas críticos: recepción de
+  incidencias, búsqueda de evidencia en logs y consulta a bases de datos.
+site_author: OpsSleuth
+repo_name: opssleuth
+repo_url: https://github.com/
+edit_uri: ""
+
+docs_dir: docs
+site_dir: site
+
+nav:
+  - Inicio: index.md
+  - Primeros pasos: getting-started.md
+  - Arquitectura: architecture.md
+  - Flujo del agente (LangGraph): agent-workflow.md
+  - Configuración (variables de entorno): configuration.md
+  - Pruebas y calidad: testing.md
+  - Referencia de código:
+      - Visión general: reference/index.md
+      - domain: reference/domain.md
+      - clarification: reference/clarification.md
+      - evidence: reference/evidence.md
+      - database: reference/database.md
+      - llm: reference/llm.md
+      - presentation: reference/presentation.md
+      - cli: reference/cli.md
+  - Roadmap y specs: roadmap.md
+
+theme:
+  name: material
+  icon:
+    logo: material/magnify-scan
+    repo: fontawesome/brands/git-alt
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: cyan
+      accent: cyan
+      toggle:
+        icon: material/weather-night
+        name: Cambiar a modo claro
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: cyan
+      accent: cyan
+      toggle:
+        icon: material/weather-sunny
+        name: Cambiar a modo oscuro
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+    - search.suggest
+    - search.highlight
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+plugins:
+  - search:
+      lang: es
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: numpy
+            docstring_section_style: table
+            merge_init_into_class: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_source: true
+            show_signature_annotations: true
+            separate_signature: true
+            signature_crossrefs: true
+            members_order: source
+            filters: ["!^_"]
+
+extra:
+  social: []

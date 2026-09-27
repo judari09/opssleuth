@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 760" width="1080" height="760" role="img" aria-labelledby="graph-title graph-desc">
+  <title id="graph-title">Grafo del agente de investigación (LangGraph, vía create_agent)</title>
+  <desc id="graph-desc">Bucle ReAct: el nodo agent invoca al modelo con las herramientas enlazadas; si la respuesta incluye tool_calls, el nodo tools las ejecuta y el resultado vuelve al agent; si no, el grafo termina en END. El mismo grafo se reutiliza para el agente de logs (evidence.agent) y el de base de datos (database.agent), cada uno con su propio conjunto de herramientas y prompt de sistema.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#38bdf8"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#f59e0b"/>
+    </marker>
+    <style>
+      .mono { font-family: "Cascadia Code","Fira Code","SFMono-Regular",Consolas,monospace; }
+      .sans { font-family: -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+      .node-title { font-weight: 700; fill: #e2e8f0; }
+      .node-sub { fill: #94a3b8; }
+      .edge-label { fill: #7dd3fc; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1080" height="760" fill="#0b1220"/>
+
+  <!-- START -->
+  <circle cx="520" cy="46" r="28" fill="#0f1b2e" stroke="#38bdf8" stroke-width="3"/>
+  <text x="520" y="51" text-anchor="middle" class="sans node-title" font-size="14">START</text>
+
+  <!-- input annotations into agent -->
+  <rect x="40" y="120" width="290" height="86" rx="10" fill="#111c33" stroke="#475569" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <text x="56" y="144" class="sans" font-size="13" fill="#cbd5e1" font-weight="600">Entrada del grafo</text>
+  <text x="56" y="164" class="mono" font-size="11.5" fill="#94a3b8">system_prompt =</text>
+  <text x="56" y="180" class="mono" font-size="11.5" fill="#94a3b8">construir_instrucciones_sistema(caso, …)</text>
+  <text x="56" y="196" class="mono" font-size="11.5" fill="#94a3b8">messages = [HumanMessage(...)]</text>
+  <path d="M330,163 H406" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- agent node -->
+  <rect x="410" y="118" width="220" height="92" rx="14" fill="#0f1b2e" stroke="#38bdf8" stroke-width="3"/>
+  <text x="520" y="150" text-anchor="middle" class="sans node-title" font-size="18">agent</text>
+  <text x="520" y="170" text-anchor="middle" class="mono node-sub" font-size="11.5">chat_model.bind_tools(herramientas)</text>
+  <text x="520" y="186" text-anchor="middle" class="mono node-sub" font-size="11.5">.invoke(messages)</text>
+
+  <path d="M520,74 V118" stroke="#38bdf8" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- decision diamond -->
+  <polygon points="520,240 630,300 520,360 410,300" fill="#0f1b2e" stroke="#38bdf8" stroke-width="3"/>
+  <text x="520" y="294" text-anchor="middle" class="sans node-title" font-size="14">¿la respuesta trae</text>
+  <text x="520" y="312" text-anchor="middle" class="sans node-title" font-size="14">tool_calls?</text>
+
+  <path d="M520,210 V240" stroke="#38bdf8" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- END branch (no) -->
+  <circle cx="800" cy="300" r="28" fill="#0f1b2e" stroke="#4ade80" stroke-width="3"/>
+  <text x="800" y="305" text-anchor="middle" class="sans node-title" font-size="14">END</text>
+  <path d="M630,300 H772" stroke="#4ade80" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="700" y="288" text-anchor="middle" class="sans edge-label" font-size="13" fill="#86efac">no → respuesta final</text>
+  <text x="700" y="322" text-anchor="middle" class="mono" font-size="11" fill="#64748b">resultado["messages"][-1].text</text>
+
+  <!-- tools branch (yes) -->
+  <path d="M520,360 V430" stroke="#38bdf8" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="556" y="400" class="sans edge-label" font-size="13">sí → ejecutar herramientas</text>
+
+  <rect x="400" y="430" width="240" height="80" rx="14" fill="#0f1b2e" stroke="#38bdf8" stroke-width="3"/>
+  <text x="520" y="464" text-anchor="middle" class="sans node-title" font-size="18">tools</text>
+  <text x="520" y="484" text-anchor="middle" class="mono node-sub" font-size="11.5">ejecuta cada tool_call → ToolMessage</text>
+
+  <!-- loop back to agent -->
+  <path d="M400,455 C260,455 260,164 408,164" fill="none" stroke="#f59e0b" stroke-width="3" marker-end="url(#arrow-amber)"/>
+  <text x="150" y="300" class="sans" font-size="13" fill="#fbbf24" transform="rotate(-90 150 300)" text-anchor="middle">ToolMessage se añade al estado</text>
+  <text x="207" y="330" class="mono" font-size="11" fill="#a16207">config.recursion_limit =</text>
+  <text x="207" y="346" class="mono" font-size="11" fill="#a16207">MAXIMO_ITERACIONES_AGENTE (15)</text>
+
+  <!-- tool sets attached to tools node -->
+  <path d="M460,510 V545" stroke="#475569" stroke-width="2" stroke-dasharray="4 3"/>
+  <path d="M580,510 V545" stroke="#475569" stroke-width="2" stroke-dasharray="4 3"/>
+
+  <rect x="60" y="545" width="420" height="170" rx="12" fill="#111c33" stroke="#4ade80" stroke-width="1.5"/>
+  <text x="80" y="572" class="sans" font-size="15" fill="#86efac" font-weight="700">evidence.agent — búsqueda en logs</text>
+  <text x="80" y="596" class="mono" font-size="12" fill="#cbd5e1">buscar_texto(patron, maximo_resultados)</text>
+  <text x="80" y="618" class="mono" font-size="12" fill="#cbd5e1">leer_contexto(numero_linea, …)</text>
+  <text x="80" y="640" class="mono" font-size="12" fill="#cbd5e1">contar_lineas()</text>
+  <text x="80" y="662" class="mono" font-size="12" fill="#cbd5e1">preguntar_al_usuario(pregunta)</text>
+  <text x="80" y="690" class="sans" font-size="11.5" fill="#64748b">1 agente por FuenteDeLogs — apreciaciones</text>
+  <text x="80" y="705" class="sans" font-size="11.5" fill="#64748b">consolidadas en ApreciacionInicialLogs</text>
+
+  <rect x="600" y="545" width="420" height="170" rx="12" fill="#111c33" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="620" y="572" class="sans" font-size="15" fill="#fde68a" font-weight="700">database.agent — consulta a BD</text>
+  <text x="620" y="596" class="mono" font-size="12" fill="#cbd5e1">listar_tablas_disponibles()</text>
+  <text x="620" y="618" class="mono" font-size="12" fill="#cbd5e1">describir_tabla(tabla)</text>
+  <text x="620" y="640" class="mono" font-size="12" fill="#cbd5e1">ejecutar_consulta_sql(consulta)</text>
+  <text x="620" y="662" class="sans" font-size="11.5" fill="#64748b">validar_consulta(): SELECT único +</text>
+  <text x="620" y="678" class="sans" font-size="11.5" fill="#64748b">solo tablas en OPSSLEUTH_DB_TABLAS_PERMITIDAS</text>
+  <text x="620" y="700" class="sans" font-size="11.5" fill="#64748b">antes de ejecutar contra el Engine</text>
+
+</svg>

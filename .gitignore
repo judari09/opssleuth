@@ -15,3 +15,6 @@ wheels/
 # Base de datos SQLite de prueba generada por test_db/generar_base_de_datos.py
 # (regenerable, no aporta como diff versionado — el generador sí se versiona)
 test_db/facturacion.db
+
+# Sitio estático generado por `mkdocs build` (regenerable a partir de docs/)
+site/
