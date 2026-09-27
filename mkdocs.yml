@@ -9,7 +9,7 @@ repo_name: opssleuth
 #   site_url: https://<owner>.github.io/opssleuth/
 # (site_url solo mejora el sitemap.xml/URLs canónicas — Pages funciona igual
 # sin ella; repo_url alimenta el ícono "ver en GitHub" del tema).
-repo_url: https://github.com/
+repo_url: https://github.com/judari09/opssleuth
 edit_uri: ""
 
 docs_dir: docs
