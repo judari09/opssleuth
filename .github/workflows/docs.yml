@@ -1,0 +1,68 @@
+name: Deploy documentation
+
+# Construye el sitio de MkDocs (docs/, mkdocs.yml) y lo publica en GitHub
+# Pages usando el flujo oficial de "deploy vía Actions" (sin rama gh-pages).
+#
+# Requisito único en la configuración del repositorio (no en este archivo):
+# Settings -> Pages -> "Build and deployment" -> Source: "GitHub Actions".
+#
+# TODO: si el repositorio no usa `master` como rama por defecto, ajusta el
+# valor de `branches` más abajo.
+on:
+  push:
+    branches: [master]
+    paths:
+      - docs/**
+      - mkdocs.yml
+      - pyproject.toml
+      - uv.lock
+      - .github/workflows/docs.yml
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Evita despliegues concurrentes que pisen el resultado del anterior; no
+# cancela uno en curso a mitad de publicación.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Instalar dependencias (grupo docs)
+        run: uv sync --group docs --frozen
+
+      - name: Construir el sitio (mkdocs build --strict)
+        run: uv run mkdocs build --strict
+
+      - name: Configurar GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Subir el sitio construido como artefacto de Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publicar en GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

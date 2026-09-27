@@ -4,6 +4,11 @@ site_description: >-
   incidencias, búsqueda de evidencia en logs y consulta a bases de datos.
 site_author: OpsSleuth
 repo_name: opssleuth
+# TODO: una vez el repositorio exista en GitHub, reemplaza estas dos líneas:
+#   repo_url: https://github.com/<owner>/opssleuth
+#   site_url: https://<owner>.github.io/opssleuth/
+# (site_url solo mejora el sitemap.xml/URLs canónicas — Pages funciona igual
+# sin ella; repo_url alimenta el ícono "ver en GitHub" del tema).
 repo_url: https://github.com/
 edit_uri: ""
 
